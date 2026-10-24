@@ -24,3 +24,11 @@ This project gives a 2016–17 Flymo 1200R robotic mower (a Husqvarna G3-platfor
 ## Cautions
 - Never send AUX1 traffic during the mower's first-boot wizard or while the hidden Tools/EXP menu is open. The firmware guards against both; see `docs/aux1_protocol.md`.
 - AUX1 start/auto/manual only take effect together with a keypad Start (a safety interlock). Stop works from AUX1 alone.
+
+## Licence
+- Code and configuration (the ESPHome yaml and any C++ headers): [MIT](LICENSE).
+- Documentation (this README and `docs/`): [CC BY 4.0](LICENSE-docs).
+
+The files in `reference/` (Flymo user manual and parts list, Husqvarna HRP startup guide, component datasheet images) are **not** covered by these licences. They remain the property of their respective owners and are included for reference only; they will be removed on request.
+
+The AUX1 protocol work builds on the Husqvarna G3 protocol mapping by the mikrocontroller.net community.
