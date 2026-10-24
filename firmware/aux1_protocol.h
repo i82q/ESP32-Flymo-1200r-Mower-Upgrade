@@ -7,14 +7,19 @@
 // CRC8:   Dallas/1-Wire (reflected poly 0x8C, init 0x00) over CMD..DATA
 // Reply:  CMD+1, DATA[0] = status byte, payload follows (resp[4] onward)
 //
-// Protocol reference: docs/aux1_protocol.md
+// Protocol reference: docs/aux1_protocol.md in this repo.
 
 #pragma once
+#include <cmath>
 #include <cstring>
+#include <ctime>
+#include <map>
 #include <string>
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 #include "esphome/components/uart/uart.h"
+#include "esphome/components/sensor/sensor.h"
+#include "esphome/components/text_sensor/text_sensor.h"
 
 namespace aux1 {
 
@@ -83,6 +88,19 @@ inline std::string hex_dump(const uint8_t *data, size_t len) {
   return s;
 }
 
+// Publish only on change, so a docked mower isn't sending the same values to
+// HA every poll. Numeric sensors compare against raw_state (the value before
+// filters, e.g. tilt's x0.1), with an optional deadband for noisy analog
+// values: publish only when the change is larger than the deadband.
+// Binary sensors already deduplicate in ESPHome, so they don't need this.
+inline void pub(esphome::sensor::Sensor *s, float v, float deadband = 0) {
+  float last = s->get_raw_state();  // .raw_state is deprecated (removed in ESPHome 2026.10)
+  if (std::isnan(last) || std::isnan(v) || std::fabs(v - last) > deadband) s->publish_state(v);
+}
+inline void pub(esphome::text_sensor::TextSensor *s, const std::string &v) {
+  if (!s->has_state() || s->state != v) s->publish_state(v);
+}
+
 inline uint16_t le16(const uint8_t *p) { return (uint16_t) p[0] | ((uint16_t) p[1] << 8); }
 inline int16_t le16s(const uint8_t *p) { return (int16_t) le16(p); }
 
@@ -101,7 +119,16 @@ inline size_t payload_len(const uint8_t *resp, size_t len) {
 // ---------------------------------------------------------------------------
 // Sends one frame and reads one reply. Returns bytes captured into resp (0 on
 // gate closed / timeout / wrong reply CMD). resp must be >= 32 bytes.
-// Every TX/RX frame is logged at DEBUG.
+//
+// Logging: the routine polls (0x12 status, 0x14 sensors, 0x18 stats) log the
+// TX/RX pair at DEBUG only when the reply differs from the last reply of the
+// same kind (reply CMD + LEN, which also separates the 0x14 selectors);
+// unchanged replies log at VERBOSE. Every other command (login, mode, config
+// writes, raw queries) always logs at DEBUG. Errors always log at WARN.
+static std::map<uint16_t, std::string> g_last_rx;
+
+inline bool is_poll_cmd(uint8_t cmd) { return cmd == 0x12 || cmd == 0x14 || cmd == 0x18; }
+
 inline size_t send_command(esphome::uart::UARTComponent *uart, uint8_t cmd, const uint8_t *data,
                            uint8_t data_len, uint8_t *resp, size_t resp_size, uint32_t timeout_ms = 500) {
   memset(resp, 0, resp_size);
@@ -123,7 +150,8 @@ inline size_t send_command(esphome::uart::UARTComponent *uart, uint8_t cmd, cons
   uint8_t junk;
   while (uart->available()) uart->read_byte(&junk);  // flush stale bytes
 
-  ESP_LOGD(TAG, "TX: %s", hex_dump(frame, idx).c_str());
+  std::string tx_hex = hex_dump(frame, idx);
+  ESP_LOGV(TAG, "TX: %s", tx_hex.c_str());
   uart->write_array(frame, idx);
 
   // Read by LEN, never by scanning for ETX: there is no byte stuffing, so
@@ -139,7 +167,7 @@ inline size_t send_command(esphome::uart::UARTComponent *uart, uint8_t cmd, cons
     }
   }
   if (!saw_stx) {
-    ESP_LOGW(TAG, "RX: timeout waiting for STX (cmd 0x%02X)", cmd);
+    ESP_LOGW(TAG, "RX: timeout waiting for STX (TX: %s)", tx_hex.c_str());
     return 0;
   }
 
@@ -156,7 +184,22 @@ inline size_t send_command(esphome::uart::UARTComponent *uart, uint8_t cmd, cons
     }
   }
   if (need > 0) ESP_LOGW(TAG, "RX: timeout mid-frame (%u bytes, cmd 0x%02X)", (unsigned) n, cmd);
-  ESP_LOGD(TAG, "RX: %s", hex_dump(resp, n).c_str());
+
+  std::string rx_hex = hex_dump(resp, n);
+  bool log_it = !is_poll_cmd(cmd) || need > 0 || n < 3;
+  if (!log_it) {
+    uint16_t key = ((uint16_t) resp[1] << 8) | resp[2];
+    auto it = g_last_rx.find(key);
+    if (it == g_last_rx.end() || it->second != rx_hex) {
+      g_last_rx[key] = rx_hex;
+      log_it = true;
+    }
+  }
+  if (log_it) {
+    ESP_LOGD(TAG, "TX: %s-> RX: %s", tx_hex.c_str(), rx_hex.c_str());
+  } else {
+    ESP_LOGV(TAG, "RX (unchanged): %s", rx_hex.c_str());
+  }
 
   // Reply CMD must be request+1, otherwise it's a stale frame from an
   // earlier transaction.
@@ -245,6 +288,74 @@ inline uint8_t set_mode(esphome::uart::UARTComponent *uart, uint8_t mode, uint16
   uint8_t st = status_byte(resp, len);
   ESP_LOGI(TAG, "Set mode 0x%02X -> status 0x%02X", mode, st);
   return st;
+}
+
+
+// ---------------------------------------------------------------------------
+// Long status frame (0x12 with DATA [01 01]) - confirmed 2 Oct
+// ---------------------------------------------------------------------------
+// Payload: 0-5 normal 0x12 status (b0..b5), 6-9 next scheduled start, 10 flag
+// (02 = start set), 11-14 mower clock, 15-16 total hours, 17 battery % (likely),
+// 18-21 unknown. Times are the mower's LOCAL time stored as a Unix epoch, so
+// format them with gmtime (no time-zone conversion). Next start is zero while
+// inside a work period. The last good read is kept in g_long for scripts.
+struct LongStatus {
+  bool ok = false;
+  uint8_t st[6] = {0, 0, 0, 0, 0, 0};
+  uint32_t next = 0;
+  bool next_set = false;
+  uint32_t clock = 0;
+  uint16_t hours = 0;
+  uint8_t batt = 0;
+  uint32_t read_ms = 0;  // millis() of the read
+};
+static LongStatus g_long;
+
+inline uint8_t timer_bits(const LongStatus &l) { return l.st[3] & 0x03; }   // 0 none, 1 in period, 2 waiting
+inline uint8_t mode_bits(const LongStatus &l) { return l.st[3] & 0x30; }    // 00 AUTO, 10 MAN, 20 HOME
+
+inline LongStatus read_long_status(esphome::uart::UARTComponent *uart, uint16_t pin) {
+  LongStatus l;
+  uint8_t q[2] = {0x01, 0x01};
+  uint8_t r[64];
+  size_t len = send_command_authed(uart, 0x12, q, sizeof(q), r, sizeof(r), pin);
+  const uint8_t *p = payload(r);
+  size_t n = payload_len(r, len);
+  if (status_byte(r, len) != 0x00 || n < 18) return l;
+  ESP_LOGI("next", "0x12 long: %s", hex_dump(p, n).c_str());
+  memcpy(l.st, p, 6);
+  l.next = (uint32_t) p[6] | (uint32_t) p[7] << 8 | (uint32_t) p[8] << 16 | (uint32_t) p[9] << 24;
+  l.next_set = l.next != 0 && p[10] != 0x00;
+  l.clock = (uint32_t) p[11] | (uint32_t) p[12] << 8 | (uint32_t) p[13] << 16 | (uint32_t) p[14] << 24;
+  l.hours = le16(&p[15]);
+  l.batt = p[17];
+  l.ok = true;
+  l.read_ms = millis();
+  g_long = l;
+  return l;
+}
+
+// "Mon 05 Oct 11:00" from a mower local-time epoch.
+inline std::string fmt_mower_time(uint32_t t) {
+  time_t tt = (time_t) t;
+  struct tm tm;
+  gmtime_r(&tt, &tm);
+  char buf[24];
+  strftime(buf, sizeof(buf), "%a %d %b %H:%M", &tm);
+  return buf;
+}
+
+// Wraps a menu sequence so it works in any mower state (keypad_and_menus.md):
+// "[r" + seq + "rs]" = lid open (wakes it), Home hold (screen on, home
+// screen), the settings, Home hold, Start, lid closed. Sequences already
+// starting with '[' are left alone; a leading '!' sends the rest raw.
+inline std::string wrap_sequence(const std::string &in) {
+  std::string s;
+  for (char c : in) if (c != ' ') s += c;
+  if (s.empty()) return s;
+  if (s[0] == '!') return s.substr(1);
+  if (s[0] == '[') return s;
+  return "[r" + s + "rs]";
 }
 
 }  // namespace aux1

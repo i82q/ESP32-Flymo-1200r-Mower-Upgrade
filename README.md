@@ -13,7 +13,7 @@ This project gives a 2016–17 Flymo 1200R robotic mower (a Husqvarna G3-platfor
 | Folder | Contents |
 |---|---|
 | `firmware/` | `automower.yaml` (ESPHome), `aux1_protocol.h` (protocol helpers), `secrets.yaml.example` |
-| `docs/` | `hardware_build.md` (wiring, relay map), `aux1_protocol.md` (decoded protocol), `keypad_and_menus.md` (menus and key sequences), `open_items.md` (status and to-do) |
+| `docs/` | `hardware_build.md` (wiring, relay map), `aux1_protocol.md` (decoded protocol), `keypad_and_menus.md` (menus and key sequences), `open_items.md` (status and to-do), `test_build_plan.md` (test plan) |
 | `reference/` | Manual, parts list, Husqvarna HRP guide, pinout images, photos |
 
 ## Building
