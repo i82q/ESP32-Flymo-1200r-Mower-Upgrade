@@ -25,10 +25,16 @@ This project gives a 2016–17 Flymo 1200R robotic mower (a Husqvarna G3-platfor
 - Never send AUX1 traffic during the mower's first-boot wizard or while the hidden Tools/EXP menu is open. The firmware guards against both; see `docs/aux1_protocol.md`.
 - AUX1 start/auto/manual only take effect together with a keypad Start (a safety interlock). Stop works from AUX1 alone.
 
+## Found something new?
+Decoded a fault code, an unknown status byte, or tried this on another G3-platform model (Automower 105/305/310/320/330X, Gardena R40Li)? Please open an Issue with the **New finding** form, or send a pull request. What's most wanted is in [CONTRIBUTING.md](CONTRIBUTING.md). Questions are welcome too; replies may be slow.
+
+## Thanks
+- The mikrocontroller.net community, for the original Husqvarna G3 AUX protocol mapping.
+- Contributors will be listed here.
+
 ## Licence
 - Code and configuration (the ESPHome yaml and any C++ headers): [MIT](LICENSE).
 - Documentation (this README and `docs/`): [CC BY 4.0](LICENSE-docs).
 
 The third-party files in `reference/` (the Flymo user manual and parts list, the Husqvarna HRP startup guide, and the MCP23017 and relay-module images) are **not** covered by these licences. They remain the property of their respective owners and are included for reference only; they will be removed on request. The photos and wiring diagrams are my own and fall under CC BY 4.0.
 
-The AUX1 protocol work builds on the Husqvarna G3 protocol mapping by the mikrocontroller.net community.

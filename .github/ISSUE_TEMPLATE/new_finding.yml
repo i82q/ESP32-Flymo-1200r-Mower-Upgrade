@@ -1,0 +1,70 @@
+name: New finding
+description: A fault code, protocol decode, model report or anything else to add to the docs
+title: "[Finding] "
+labels: ["finding"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing. The list of known unknowns is in `docs/open_items.md` (Protocol unknowns) and `docs/aux1_protocol.md`.
+  - type: dropdown
+    id: model
+    attributes:
+      label: Mower model
+      options:
+        - Flymo 1200R
+        - Husqvarna Automower 105
+        - Husqvarna Automower 305 / 308
+        - Husqvarna Automower 310 / 315 / 320 / 330X
+        - Gardena R40Li / R70Li
+        - Other (say below)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Firmware / software version and production year
+      description: From the mower's Settings → About screen, if you have it
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of finding?
+      options:
+        - Fault code (screen text + code)
+        - Protocol decode (command, byte or status meaning)
+        - Keypad / menu behaviour
+        - Hardware / wiring
+        - Works (or doesn't) on another model
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: finding
+    attributes:
+      label: What you found
+      description: What it means and how sure you are (confirmed / likely / guess)
+    validations:
+      required: true
+  - type: input
+    id: screen
+    attributes:
+      label: Screen text, if any
+      placeholder: e.g. "Mower lifted" / fault 15
+  - type: textarea
+    id: frames
+    attributes:
+      label: AUX1 frames or log lines
+      description: Paste the relevant TX/RX lines. Remove any PIN (0x0C login frames).
+      render: text
+  - type: textarea
+    id: how
+    attributes:
+      label: How to reproduce
+      description: What you did, and the mower's state at the time (docked, mowing, fault...)
+  - type: checkboxes
+    id: licence
+    attributes:
+      label: Permission
+      options:
+        - label: I'm happy for this to be added to the docs under CC BY 4.0, with credit to me
+          required: true
