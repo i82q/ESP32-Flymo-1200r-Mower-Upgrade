@@ -29,6 +29,6 @@ This project gives a 2016–17 Flymo 1200R robotic mower (a Husqvarna G3-platfor
 - Code and configuration (the ESPHome yaml and any C++ headers): [MIT](LICENSE).
 - Documentation (this README and `docs/`): [CC BY 4.0](LICENSE-docs).
 
-The files in `reference/` (Flymo user manual and parts list, Husqvarna HRP startup guide, component datasheet images) are **not** covered by these licences. They remain the property of their respective owners and are included for reference only; they will be removed on request.
+The third-party files in `reference/` (the Flymo user manual and parts list, the Husqvarna HRP startup guide, and the MCP23017 and relay-module images) are **not** covered by these licences. They remain the property of their respective owners and are included for reference only; they will be removed on request. The photos and wiring diagrams are my own and fall under CC BY 4.0.
 
 The AUX1 protocol work builds on the Husqvarna G3 protocol mapping by the mikrocontroller.net community.
