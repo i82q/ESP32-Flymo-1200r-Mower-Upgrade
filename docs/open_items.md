@@ -2,7 +2,7 @@
 
 The single list of what's left. When an item is done, delete it here and record the result in the relevant reference doc. Tests that need the real installation are planned in `test_build_plan.md`; this file only points to them.
 
-_Last tidied: 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written). 17 Oct: "No Mow" flag + mailbox design added; mower parked for new grass seed._
+_Last tidied: 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written). 17 Oct: "No Mow" flag + mailbox design added; mower parked for new grass seed. 3 Nov: capture log 10 Oct – 3 Nov reviewed (see "Log review 10 Oct – 3 Nov" below)._
 
 ## Working now (firmware 25 Sep – 5 Oct)
 - **AUX1 telemetry:** status, battery, tilt/collision, stats, blade and wheel telemetry. PIN login with auto-relogin.
@@ -14,17 +14,28 @@ _Last tidied: 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written).
 - **Mow-day tracking:** one summary per mowing day; docking inside the work period counts as a charge stop (cycles counted), docking outside it or with HOME selected ends the day. Last Mow Duration / Cutting Time / Blade Current / Faults / Summary, kept in flash; ntfy notification automation in HA. Worked Mon 5, Tue 6, Wed 7, Fri 9 Oct (1 cycle each; Wed's log lines were lost in an MQTT reconnect but the day did close — Fri logged a fresh "Mow day started").
 - **Fault record decode:** `Automower Last Fault`, e.g. `code 15 Mower lifted` from the 0x18 record (9 Oct).
 - **Adaptive polling + publish-on-change:** blade/wheels only while mowing, leaving or going home; tilt every 60s otherwise. Sensors publish only on change (small deadbands). Poll replies are logged only when they change.
-- **Battery-fed ESP32:** pack-voltage ADC (`pack_multiplier` 7.57, confirmed 28 Sep; 7 Oct pairs down to 18.1V still within ~±0.15V, one −0.6V outlier under 2.1A load), AUX1-awake sense, reset diagnostics. Deep sleep only when pack < 17.5V **and** the mower is in standby.
-- **Top-up wake:** wakes the mower, reports pack/mower voltage, charge current and clock drift. With HOME selected it doesn't charge (sleeps ~16 s after the lid closes). With AUTO selected (stopped) it does: 14 Oct 385 mA at 19.8 V, 15 Oct 1,037 mA at 19.0 V. Nightly Top-up was enabled from ~11 Oct.
+- **Battery-fed ESP32:** pack-voltage ADC (`pack_multiplier` 7.57, confirmed 28 Sep; 7 Oct pairs down to 18.1V still within ~±0.15V, one −0.6V outlier under 2.1A load; 2,404 pairs 2 Oct – 3 Nov down to 17.56V: median −0.003V, but the ADC reads ~+0.2V high while charging at ~1A and ~−0.1V low while discharging), AUX1-awake sense, reset diagnostics. Deep sleep only when pack < 17.5V **and** the mower is in standby.
+- **Top-up wake:** wakes the mower, reports pack/mower voltage, charge current and clock drift. With HOME selected it doesn't charge (sleeps ~16 s after the lid closes). With AUTO selected (stopped) it does: 14 Oct 385 mA at 19.8 V, 15 Oct 1,037 mA at 19.0 V. Nightly Top-up was enabled from ~11 Oct, left off by choice 19 Oct – 2 Nov, ran again 3 Nov. With AUTO **armed** and the timer waiting (3 Nov 02:00, pack 19.7 V, state `01 00 05 02`) it did **not** charge.
 - **Capture logging:** HA File notify + automation on `automower/#`. NB lines can be lost during MQTT reconnects on the lawn.
-- **No unplanned ESP resets 2–10 Oct** (all reboots were OTA).
+- **No unplanned ESP resets 2 Oct – 3 Nov** (all reboots were OTA or low-pack deep-sleep wakes; ESPHome 2026.10.0 since 22 Oct). The 21 "task watchdog" reset reasons in the capture log are stale retained topics replayed on HA restarts (uptime always 1562) — see Housekeeping.
 
-## Current state (17 Oct)
-- **Mowing paused while new grass seed establishes.** Mower docked, **AUTO selected but stopped** (0x12 `01 00 05 00`), **timer cleared** (no restriction) — so a Start would send it straight out. This is the intended parked state for now: it charges on top-up wakes. Don't press Mode Auto until the timer is re-entered and the grass is ready.
+## Current state (3 Nov)
+- **Mowing resumed.** 2 Nov ~11:28 started by hand at the mower (no ESP key sequence; b2 `05`→`06`), one cycle. Normal timer re-entered 2 Nov 14:30 with the keypad path `[rm1111001530orm1200000000orm13867brs]` → Next Start 3 Nov 11:00.
+- **3 Nov:** left on the timer at 11:06, 2 cycles (11:07–12:32, charge 82 min, 13:55–15:16), lowest pack 17.56 V at the end of cycle 1.
+- Mower clock synced 3 Nov 02:00 (it had been +1 h since the BST change on 25 Oct).
+- Before the 2 Nov restore, Next Start read 3 Nov 01:00 (mower clock) with the timer cleared — it looks like it would have gone out in the night. Re-enter the timer whenever mowing resumes after a clear.
+
+## Log review 10 Oct – 3 Nov
+- **Low-pack deep sleep happened 7 times** (13, 17, 20, 22, 24, 27, 30 Oct; pack 17.32–17.50 V) while Nightly Top-up was off. Every wake from 17 Oct on found the mower **already awake and charging** ~1.05 A from ~17.9 V, reaching ~20.3 V in 2–3 h, then standby. So the pack cycled full → 17.4 V roughly every 2–3 days without any top-up.
+- **Open question:** what woke the mower during that hour? Either the relay release on the way into deep sleep (`release_keys` + stop loop off) acts as a lid open/close, or the mower starts its own charge at low voltage. Decides whether the 17.5 V deep sleep is a dependable floor. Test: with the ESP awake and logging, let the pack run below 17.5 V with deep sleep disabled and see if AUX1 powers up by itself.
+- **b2 `05` is not "won't start".** After the 2 Nov 14:31 timer restore and the 3 Nov 02:00 top-up (lid open/close, no Start), b2 was `05` with b3 `02` waiting and b4 `00`/`24` — yet it left on the timer at 11:06 (b2 `05`→`06` on departure). The 6 Oct no-start had b4 `47`, so **b4 `47`** looks like the real "stopped, won't start" marker. This weakens the 17 Oct hatch rule (below) — check before building no_mow on "close without Start parks it".
+- **Clock drift / BST:** the mower doesn't change for summer time; the ESP only syncs it during a top-up, so with Nightly Top-up off it ran an hour fast for 9 days. → Firmware to do.
+- AUX1: 4 brief RX timeouts / one CMD mismatch (9, 25, 30 Oct), each recovered on its own, some with an auto re-login.
+- While mowing, preferences are written to flash every minute (mow-day tracking). Fine for NVS wear, but easy to cut if tidying.
 
 ## Design agreed 17 Oct — "No Mow" flag + command mailbox (next build)
 Findings 13–17 Oct that drive it:
-- **The mower's hatch rule:** a lid-close only counts as "closed" if Start was pressed while it was (logically) open. Close without Start → stays stopped (0x12 b2 = `05`). The worn stop-button mechanism makes this visible by hand: the microswitch recloses with the lid open, and the mower only accepts "closed" after Start + another open/close. Parts if wanted: micro switch **574 48 03-01**, spring **574 48 70-01**, spring lock **576 24 22-01**, lock **575 40 90-01**.
+- **The mower's hatch rule:** a lid-close only counts as "closed" if Start was pressed while it was (logically) open. Close without Start → stays stopped (0x12 b2 = `05`). **3 Nov caveat:** b2 `05` with the timer waiting still left on schedule — see "Log review 10 Oct – 3 Nov". The worn stop-button mechanism makes this visible by hand: the microswitch recloses with the lid open, and the mower only accepts "closed" after Start + another open/close. Parts if wanted: micro switch **574 48 03-01**, spring **574 48 70-01**, spring lock **576 24 22-01**, lock **575 40 90-01**.
 - **AUTO + stopped (b2 `05`) is the ideal "parked" state:** docked, won't mow, and a hatch wake keeps it awake long enough to charge. **HOME is not:** it sleeps ~16 s after a wake, so it never tops up.
 - The 02:00 top-up wake (open/close, no Start) leaves it stopped — harmless now, but it would also disarm a mower that should mow.
 - **Top-up skipped after an ESP restart** ("not docked" 16 and 17 Oct, last state unknown) → pack fell to 17.45 V and the ESP deep-slept (17 Oct 05:23). Must wake and check instead of skipping when the state is unknown.
@@ -47,17 +58,16 @@ The design:
 
 ## Built 10 Oct, to test
 - [ ] **Skip Today** button + `Automower Skip` sensor: `[rmh1s]` now, `[rmh2s]` at 23:00 (`skip_rearm_*`), verified by mode bits, retried every 10 min ×6, cancelled by any mode button, pending flag in flash. Timer untouched. Test: press while docked → HOME; at 23:00 → AUTO + next start. Then once while mowing.
-- [ ] **Restore Timer confirmation fix:** confirmed when a next start is shown (or in work period), `- HOME selected` noted. Park with HOME selected reports "can't be verified".
 - [ ] Optional HA ntfy automation on `Automower Skip` containing "FAILED" / "NOT confirmed".
 - [ ] Once Skip Today works: decide whether to retire Park / Restore Timer / Timer Auto Restore (Skip covers the day-to-day use without rewriting the timer).
 
 ## Built 2 Oct — Phase 0 results so far (test_build_plan.md)
-- [ ] **Restore Timer, 9 Oct 23:00:** 6 attempts, all "not confirmed (timer bits 0x00)", then "FAILED" — but every attempt had written the timer: the long 0x12 frame showed Next Start = Mon 12 11:00 (b10 = 02) 2s after the lid closed, then 0 ~6s later. HOME was selected, which hides "waiting"/Next Start. Fixed 10 Oct (above); re-test with the new build.
 - [ ] **Park (all work days off) 9 Oct 07:17: "not confirmed"** — inconclusive (HOME already selected). Still unproven; test with AUTO selected.
 - [ ] **Keypad Self Test 5 Oct: FAIL** — step 1 HOME ok; step 2 got no reply because AUX1 dropped into standby mid-sequence (11:27:17). The 5 Oct standby guard should help. Also step 3 compares timer bits before/after, which HOME hides outside a work period — likely to false-fail; review before re-running.
 - [ ] **Auto-wrap** of Send Keypad Menu Path and `automower/keys` as `[r … r s]` — sequences in the log are wrapped correctly; not separately tested.
 
 ## Firmware to do
+- [ ] **Clock sync independent of Nightly Top-up.** Sync the mower clock on any wake with AUX1 ready and the mower docked (mow start, charge, manual wake), not only in the top-up — and/or a one-off wake the night after a BST change. 25 Oct – 3 Nov it ran +1 h because top-up was off. Fits the mailbox `sync_time` command.
 - [ ] **Stuck detection.** Data from 28 Sep:
   - A lifted fault shows as 0x12 `07` + 0x14/04 lifted = 1, held for the whole fault (17:29:15–17:39:45). That combination is a reliable "stuck/lifted" alert.
   - A brief collision + lifted for 10s (18:03:35) recovered by itself, so only alert on the fault, not the flag alone.
@@ -75,11 +85,11 @@ The design:
   - Then hide most of the button clutter from the device page.
 - [ ] **Rename the ESPHome `friendly_name`** from "Automower AUX1 Bridge" to something shorter and more useful (e.g. "Automower"). Check how HA displays entity names that already start with "Automower" before choosing, and that existing entity IDs (used by automations) stay unchanged.
 - [ ] **Tidy-up (no behaviour change):** remove the dead globals `tc_park` and `tu_manual`; move the "Changes 5 Oct / 10 Oct" header comments into the docs; factor the repeated "publish Next Start" code (now ×5) and battery read (×2) into helpers in `aux1_protocol.h`; replace the key-language comment block with a pointer to `keypad_and_menus.md`.
-- [ ] **Optional cuts, to decide then:** the 17 single-key buttons (Keypad Menu Path with `!` covers them); Status Byte3/Byte4 numeric sensors; the `pair:` voltage log line once the low-voltage pairs are in.
+- [ ] **Optional cuts, to decide then:** the 17 single-key buttons (Keypad Menu Path with `!` covers them); Status Byte3/Byte4 numeric sensors; the `pair:` voltage log line (low-voltage pairs are now in, down to 17.56 V — can go).
 - [ ] Project file naming: the device's file is `mower.yaml` in the ESPHome builder; the project keeps it as `automower.yaml`.
 
 ## Hardware / installation
-- [ ] **WiFi.** Still weak: roam scans at −84 to −92 dBm while mowing and docked, regular MQTT offline/online drops (and lost log lines). No resets since 2 Oct though. Improve AP placement or fit an external antenna. Needed before the test session (flight-recorder dumps are bursty).
+- [ ] **WiFi.** Still weak: roam scans at −84 to −92 dBm while mowing and docked, regular MQTT offline/online drops (and lost log lines) — 370 offline events 2 Oct – 3 Nov, roam scans mostly −84 to −92 dBm. No resets since 2 Oct though. Improve AP placement or fit an external antenna. Needed before the test session (flight-recorder dumps are bursty).
 - [ ] **Bumper/shell sticking lifted** (mechanical): stuck twice in one mow on 28 Sep; possible repeat 9 Oct 15:36. Check the shell moves freely on its mounts.
 - [ ] **Stop button / lid microswitch worn:** recloses with the lid open (17 Oct). Parts above.
 
@@ -102,7 +112,7 @@ The design:
 
 ## Protocol unknowns
 - b1 bit2 (candidate "boundary wire close by") and bits 1–3 generally (A2).
-- b2 `05` = stopped / not armed (after STOP or a lid-close without Start); `06`/`07`/`08` = armed AUTO/MAN/HOME.
+- b2 `05` = stopped / not armed (after STOP or a lid-close without Start); `06`/`07`/`08` = armed AUTO/MAN/HOME. **But** 3 Nov: `05` with b3 `02` (waiting) and b4 `00`/`24` still started on the timer — b4 `47` may be the real "won't start" flag. Pin down which combination blocks a timer start.
 - b3 with HOME: `20` outside a work period (never `22` "waiting"), `21` inside one (5 Oct); `22` seen only while the lid was open mid-sequence. Next Start is shown for a few seconds after the lid closes, then 0.
 - b4 values: `24` keypad in use, `46` parked by the timer (armed), `47` stopped/won't start (seen before standby after a lid-close without Start, and with HOME), `1B` once after the 0x10 incident, `27` before a re-login. Any others?
 - Long 0x12 frame: byte 18, bytes 20–21 (looks like a settings-write counter: 0x0119 → 0x0129 → 0x0154 over 5–9 Oct, → 0x0165 on 13 Oct after the timer was cleared by hand), the u16 after total hours.
@@ -118,8 +128,8 @@ The design:
 - **Never sweep 0x10 or 0x36** — they are actions, not reads.
 
 ## Housekeeping
-- [ ] Purge stale retained MQTT topics on mqtt.home. With `topic_prefix: null` nothing refreshes the old `automower/sensor|switch|select|text/...` topics, so clear them (`mosquitto_pub -r -n`). That includes `automower_command`, `automower_stop_loop`, the `keypad_*` switches and any `homeassistant/…/automower` discovery configs. They still replay on every HA restart (seen 13 Oct).
+- [ ] Purge stale retained MQTT topics on mqtt.home. With `topic_prefix: null` nothing refreshes the old `automower/sensor|switch|select|text/...` topics, so clear them (`mosquitto_pub -r -n`). That includes `automower_command`, `automower_stop_loop`, the `keypad_*` switches and any `homeassistant/…/automower` discovery configs. They still replay on every HA restart (seen 13 Oct; 21 replays 3 Oct – 1 Nov, each showing a bogus "task watchdog" reset reason and uptime 1562).
 - [ ] Delete leftover `zigbee2mqtt/…` retained topics on the old broker (192.168.42.5), if any.
 - [ ] Move Solar Assistant to the official HACS integration, then remove the MQTT bridge entirely.
-- [ ] Capture log: ~1MB per mowing day, never rotates, and sits inside /config (so it's in backups). Reached 1.8MB by 17 Oct. Stop or clear it after the test session.
+- [ ] Capture log: ~1MB per mowing day, never rotates, and sits inside /config (so it's in backups). Reached 1.8MB by 17 Oct, 3.2MB by 3 Nov. Stop or clear it after the test session.
 - [ ] Update the `Automower Tilt Z` comment in the yaml ("Z-axis or magnitude - unconfirmed") once the Z tests are done.
