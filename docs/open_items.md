@@ -2,7 +2,7 @@
 
 The single list of what's left. When an item is done, delete it here and record the result in the relevant reference doc. Tests that need the real installation are planned in `test_build_plan.md`; this file only points to them.
 
-_Last tidied: 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written). 17 Oct: "No Mow" flag + mailbox design added; mower parked for new grass seed. 3 Nov: capture log 10 Oct – 3 Nov reviewed (see "Log review 10 Oct – 3 Nov" below)._
+_Last tidied: 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written). 17 Oct: "No Mow" flag + mailbox design added; mower parked for new grass seed. 3 Nov: capture log 10 Oct – 3 Nov reviewed (see "Log review 10 Oct – 3 Nov" below). 4 Nov: unexplained stop on the lawn — evidence log under Hardware._
 
 ## Working now (firmware 25 Sep – 5 Oct)
 - **AUX1 telemetry:** status, battery, tilt/collision, stats, blade and wheel telemetry. PIN login with auto-relogin.
@@ -19,7 +19,10 @@ _Last tidied: 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written).
 - **Capture logging:** HA File notify + automation on `automower/#`. NB lines can be lost during MQTT reconnects on the lawn.
 - **No unplanned ESP resets 2 Oct – 3 Nov** (all reboots were OTA or low-pack deep-sleep wakes; ESPHome 2026.10.0 since 22 Oct). The 21 "task watchdog" reset reasons in the capture log are stale retained topics replayed on HA restarts (uptime always 1562) — see Housekeeping.
 
-## Current state (3 Nov)
+## Current state (4 Nov)
+- **4 Nov:** left on the timer at 11:00:34 (first timer start after the clock sync — on time). Cycle 1 11:00–12:07, charge 75 min, cycle 2 from 13:23 → **stopped by itself on the lawn at 14:09** (see "Unexplained stops" under Hardware). Found sitting there; sent home by hand at 15:54 with **HOME selected** (b2 `08`, b3 `20`) — set AUTO again before the next timer start.
+
+## Earlier state (3 Nov)
 - **Mowing resumed.** 2 Nov ~11:28 started by hand at the mower (no ESP key sequence; b2 `05`→`06`), one cycle. Normal timer re-entered 2 Nov 14:30 with the keypad path `[rm1111001530orm1200000000orm13867brs]` → Next Start 3 Nov 11:00.
 - **3 Nov:** left on the timer at 11:06, 2 cycles (11:07–12:32, charge 82 min, 13:55–15:16), lowest pack 17.56 V at the end of cycle 1.
 - Mower clock synced 3 Nov 02:00 (it had been +1 h since the BST change on 25 Oct).
@@ -73,7 +76,9 @@ The design:
   - A brief collision + lifted for 10s (18:03:35) recovered by itself, so only alert on the fault, not the flag alone.
   - A stall at 18:15 showed blade current ~1.5A just before the fault.
   - 9 Oct 15:36: code 15 "Mower lifted" while going home, ~1 min after two back-to-back `[rmh1s]` hatch sequences; recovered and docked by 15:37. Either the shell/bumper again or the hatch emulation while driving — avoid sending hatch sequences while the mower is moving.
+  - **Stopped on the lawn (4 Nov 14:09):** 0x12 b0 `01`, b1 `00` (not on the charger), b2 `05`, b4 `24`, inside a work period, no fault — sat there 1 h 45 min unnoticed. Alert after ~5 min in that state. Nothing else in 0x12/0x14 flags it.
   - Other triggers: fault + draining + off charger; AUX1 goes dark while out mowing without a home command; long `03` without finding the guide (test C1); state `08` lasting more than ~15 min.
+- [ ] **Unexplained-stop capture** (evidence for "Unexplained stops" below). When b2 goes `06`/`07` → `05` while off the charger (b1 bit3 clear) and the ESP sent no key sequence or hatch change in the last ~30 s: log `WARN stop: unexplained` with the last ~60 s of 0x14/02/03/04 frames and the 0x12 frame (keep a small ring buffer), publish to an `Automower Last Stop` text sensor, and fire the ntfy automation. Also count them (`Automower Unexplained Stops`, kept in flash). Optionally poll 0x12 every 10 s while mowing (now 30 s) to time the stop more tightly.
 - [ ] **Grass growth / skip-day tracking.** Needs a baseline of daily blade-current averages first (Last Mow Blade Current long-term stats). Watch for wet-grass effects. 28 Sep reference: ~2,900 rpm, current median 254mA, p95 459. Could later drive Skip Today automatically.
 - [ ] **Rain → no_mow automation** once the rain gauge node works (separate ESP32 + CC1101 decoding the TFA DROP 30.3233.01; `rain-gauge.yaml`). The RFXtrx433E (fw 1043/1048 Pro1) receives the DROP but doesn't decode it; an RXB6 receiver was too noisy at 10 m.
 
@@ -92,6 +97,15 @@ The design:
 - [ ] **WiFi.** Still weak: roam scans at −84 to −92 dBm while mowing and docked, regular MQTT offline/online drops (and lost log lines) — 370 offline events 2 Oct – 3 Nov, roam scans mostly −84 to −92 dBm. No resets since 2 Oct though. Improve AP placement or fit an external antenna. Needed before the test session (flight-recorder dumps are bursty).
 - [ ] **Bumper/shell sticking lifted** (mechanical): stuck twice in one mow on 28 Sep; possible repeat 9 Oct 15:36. Check the shell moves freely on its mounts.
 - [ ] **Stop button / lid microswitch worn:** recloses with the lid open (17 Oct). Parts above.
+- [ ] **Unexplained stops mid-mow — keep watching, collect evidence.** Suspect: the stop loop opening briefly while driving. Two things are in that loop: the worn lid microswitch, and the ESP's B2R8 NC relay contact + its splice. The log can't tell them apart.
+  - **What a case looks like (4 Nov 14:09:04–14:09:14, 10 s poll gap):** everything normal up to the last poll — blade 2,894 rpm / 208 mA (max 566 mA in the 5 min before, no stall spike), wheels straight ~295 mm/s / 73 %, level (X +1.6°, Y +1.0°), no collision/lift flag, pack 19.03 V under load, 0x12 unchanged since 13:23. Next poll: blade 0 rpm / −12 mA, wheels 0, tilt frozen; 0x12 → `01 00 05 01 24`; no fault, 0x18 record unchanged. ESP up and connected throughout (no reset, no key sequence, Hatch untouched) — so not a relay drop on reboot. The blade "unknown" field (normally 5816) jumping at 14:07:24/14:09:24 is noise (~12 % of mowing samples do that).
+  - **Bench checks:** mower awake on the dock, lid shut, AUTO — flex the wiring at the relay board and the splice into the stop loop, then tap/press around the lid and the stop-button mechanism; whichever stops it is the culprit. Check the B2R8 NC contact for continuity while tapping the relay board. Inspect the crimps.
+  - **Each new case, record:** date/time, where on the lawn (slope? bumpy? near the boundary?), wet/dry, cycle and minutes into it, pack V, whether the lid looked fully shut, and what the screen showed when found. Add a row below.
+  - **Next step if it repeats:** fit the microswitch 574 48 03-01 (+ spring 574 48 70-01) and re-make the splice — doing both at once won't say which it was, so do the bench checks first.
+
+  | Date / time | Cycle, min in | Where / conditions | Pack | Notes |
+  |---|---|---|---|---|
+  | 4 Nov 14:09 | 2, 46 min | ? (driving straight, level) | 19.0 V | No fault, b4 `24`. Found by hand, sent home 15:54 with HOME. |
 
 ## Answered by the test session (test_build_plan.md)
 - Can any AUX1 command clear a fault? (B5)
