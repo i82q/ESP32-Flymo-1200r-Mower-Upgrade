@@ -23,6 +23,7 @@ _Last tidied: 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written).
 - **Out of action since Sat 7 Nov 17:58: no loop signal, not charging.** It left the station at 17:58 (`05 0F`), went straight to state `08` "waiting for loop signal" (b1 `00`, off the charger — probably just in front of the station) and logged **fault code 2 "No loop signal"** at 17:59 (0x18 record `E9 66 EF 6A 02 00 02 FD 00 12 …`). Since then AUX1 wakes for ~35 s every ~5.5 min to look for the signal; status alternates `08 00 06 00 47` / `08 00 06 00 00`.
 - **When the loop was lost:** after 16:58 (it docked by following the guide wire, so the signal was there) and before 17:58. The station still had power at 17:53 (charging ~393 mA, pack 20.48 V). So a power cut is unlikely — suspect a **boundary/guide wire break** or the station's loop output. Check the station LED, then the wire.
 - **Battery:** 20.48 V (17:53 Sat) → 19.25 V (11:00 Sun), ~−90 mA, ~0.06 V/h. At that rate it reaches the ESP's 17.5 V deep-sleep threshold around **Mon 9 Nov evening** — fix before then.
+- **Resolved 8 Nov ~11:40:** loop broken (probably damp, temporary fixes made); mower carried back to the charger by hand, charging, Mode Home pressed in HA (sticky — press Auto, with the timer restored, to mow again). The notes below are kept for the record.
 - **Before the loop comes back, select HOME or Restore Timer:** the timer has no restriction (see Park below), so once the signal returns it would go mowing straight away, day or night.
 
 ## Earlier state (4–7 Nov)
@@ -105,7 +106,7 @@ The design:
 
 ## Hardware / installation
 - [ ] **WiFi.** Still weak: roam scans at −84 to −92 dBm while mowing and docked, regular MQTT offline/online drops (and lost log lines) — 370 offline events 2 Oct – 3 Nov, roam scans mostly −84 to −92 dBm. No resets since 2 Oct though. Improve AP placement or fit an external antenna. Needed before the test session (flight-recorder dumps are bursty).
-- [ ] **Loop signal lost 7 Nov between 16:58 and 17:58** with the station still powered (charging until at least 17:53). Find the cause: station LED, loop/guide wire continuity, any damage along Saturday's mowing. Record what it was here.
+- [ ] **Loop wire break (7 Nov, signal lost 16:58–17:58)** — probably damp getting into a joint; temporary fixes made 8 Nov. Make a permanent repair (gel-filled connectors) and watch for a repeat in wet weather.
 - [ ] **Bumper/shell sticking lifted** (mechanical): stuck twice in one mow on 28 Sep; possible repeat 9 Oct 15:36. Check the shell moves freely on its mounts.
 - [ ] **Stop button / lid microswitch worn:** recloses with the lid open (17 Oct). Parts above.
 - [ ] **Unexplained stops mid-mow — keep watching, collect evidence.** Suspect: the stop loop opening briefly while driving. Two things are in that loop: the worn lid microswitch, and the ESP's B2R8 NC relay contact + its splice. The log can't tell them apart.
