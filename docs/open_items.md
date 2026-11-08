@@ -2,7 +2,7 @@
 
 The single list of what's left. When an item is done, delete it here and record the result in the relevant reference doc. Tests that need the real installation are planned in `test_build_plan.md`; this file only points to them.
 
-_Last tidied: 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written). 17 Oct: "No Mow" flag + mailbox design added; mower parked for new grass seed. 3 Nov: capture log 10 Oct – 3 Nov reviewed (see "Log review 10 Oct – 3 Nov" below). 4 Nov: unexplained stop on the lawn — evidence log under Hardware._
+_Last tidied: 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written). 17 Oct: "No Mow" flag + mailbox design added; mower parked for new grass seed. 3 Nov: capture log 10 Oct – 3 Nov reviewed (see "Log review 10 Oct – 3 Nov" below). 4 Nov: unexplained stop on the lawn — evidence log under Hardware. 8 Nov: capture log 3–8 Nov reviewed — Park clears the timer, no-loop fault 7 Nov._
 
 ## Working now (firmware 25 Sep – 5 Oct)
 - **AUX1 telemetry:** status, battery, tilt/collision, stats, blade and wheel telemetry. PIN login with auto-relogin.
@@ -19,7 +19,16 @@ _Last tidied: 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written).
 - **Capture logging:** HA File notify + automation on `automower/#`. NB lines can be lost during MQTT reconnects on the lawn.
 - **No unplanned ESP resets 2 Oct – 3 Nov** (all reboots were OTA or low-pack deep-sleep wakes; ESPHome 2026.10.0 since 22 Oct). The 21 "task watchdog" reset reasons in the capture log are stale retained topics replayed on HA restarts (uptime always 1562) — see Housekeeping.
 
-## Current state (4 Nov)
+## Current state (8 Nov 11:23)
+- **Out of action since Sat 7 Nov 17:58: no loop signal, not charging.** It left the station at 17:58 (`05 0F`), went straight to state `08` "waiting for loop signal" (b1 `00`, off the charger — probably just in front of the station) and logged **fault code 2 "No loop signal"** at 17:59 (0x18 record `E9 66 EF 6A 02 00 02 FD 00 12 …`). Since then AUX1 wakes for ~35 s every ~5.5 min to look for the signal; status alternates `08 00 06 00 47` / `08 00 06 00 00`.
+- **When the loop was lost:** after 16:58 (it docked by following the guide wire, so the signal was there) and before 17:58. The station still had power at 17:53 (charging ~393 mA, pack 20.48 V). So a power cut is unlikely — suspect a **boundary/guide wire break** or the station's loop output. Check the station LED, then the wire.
+- **Battery:** 20.48 V (17:53 Sat) → 19.25 V (11:00 Sun), ~−90 mA, ~0.06 V/h. At that rate it reaches the ESP's 17.5 V deep-sleep threshold around **Mon 9 Nov evening** — fix before then.
+- **Before the loop comes back, select HOME or Restore Timer:** the timer has no restriction (see Park below), so once the signal returns it would go mowing straight away, day or night.
+
+## Earlier state (4–7 Nov)
+- **7 Nov (Sat):** AUTO selected by hand at the mower at ~11:47 (AUX1 off/on 4 s apart, no ESP key sequence; status `04 0C 06 00 00` = armed, timer bits `0` no restriction, Next Start 0). It then mowed whenever charged, Saturday or not: 12:49–14:22 (16 min of guide/home search at the end), 15:30–16:58, and out again at **17:58 in the dark** → no-loop fault (above). Without the fault it would likely have kept going overnight.
+- **6 Nov 00:30:** Automower Park pressed: `[rm1381234567brs]`; "park sent; HOME selected, so the timer state can't be read".
+- **5 Nov:** nothing (HOME selected).
 - **4 Nov:** left on the timer at 11:00:34 (first timer start after the clock sync — on time). Cycle 1 11:00–12:07, charge 75 min, cycle 2 from 13:23 → **stopped by itself on the lawn at 14:09** (see "Unexplained stops" under Hardware). Found sitting there; sent home by hand at 15:54 with **HOME selected** (b2 `08`, b3 `20`) — set AUTO again before the next timer start.
 
 ## Earlier state (3 Nov)
@@ -33,7 +42,7 @@ _Last tidied: 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written).
 - **Open question:** what woke the mower during that hour? Either the relay release on the way into deep sleep (`release_keys` + stop loop off) acts as a lid open/close, or the mower starts its own charge at low voltage. Decides whether the 17.5 V deep sleep is a dependable floor. Test: with the ESP awake and logging, let the pack run below 17.5 V with deep sleep disabled and see if AUX1 powers up by itself.
 - **b2 `05` is not "won't start".** After the 2 Nov 14:31 timer restore and the 3 Nov 02:00 top-up (lid open/close, no Start), b2 was `05` with b3 `02` waiting and b4 `00`/`24` — yet it left on the timer at 11:06 (b2 `05`→`06` on departure). The 6 Oct no-start had b4 `47`, so **b4 `47`** looks like the real "stopped, won't start" marker. This weakens the 17 Oct hatch rule (below) — check before building no_mow on "close without Start parks it".
 - **Clock drift / BST:** the mower doesn't change for summer time; the ESP only syncs it during a top-up, so with Nightly Top-up off it ran an hour fast for 9 days. → Firmware to do.
-- AUX1: 4 brief RX timeouts / one CMD mismatch (9, 25, 30 Oct), each recovered on its own, some with an auto re-login.
+- AUX1: 4 brief RX timeouts / one CMD mismatch (9, 25, 30 Oct), each recovered on its own, some with an auto re-login. 7–8 Nov: a handful more (19:32, 22:42–22:48, 06:39), all during the short no-loop wakes as AUX1 powered down mid-poll; harmless.
 - While mowing, preferences are written to flash every minute (mow-day tracking). Fine for NVS wear, but easy to cut if tidying.
 
 ## Design agreed 17 Oct — "No Mow" flag + command mailbox (next build)
@@ -65,7 +74,7 @@ The design:
 - [ ] Once Skip Today works: decide whether to retire Park / Restore Timer / Timer Auto Restore (Skip covers the day-to-day use without rewriting the timer).
 
 ## Built 2 Oct — Phase 0 results so far (test_build_plan.md)
-- [ ] **Park (all work days off) 9 Oct 07:17: "not confirmed"** — inconclusive (HOME already selected). Still unproven; test with AUTO selected.
+- [x] **Park (all work days off) — answered 7 Nov: it does NOT park, it removes the schedule.** After the 6 Nov park, AUTO showed timer bits `0` (no restriction, same as the 13 Oct cleared timer) and the mower went out every time it was charged, including after dark. **Retire Park / Timer Auto Restore**, or rebuild "parked" on the 17 Oct design (AUTO selected, stopped, no Start). Never leave the mower in AUTO after a Park.
 - [ ] **Keypad Self Test 5 Oct: FAIL** — step 1 HOME ok; step 2 got no reply because AUX1 dropped into standby mid-sequence (11:27:17). The 5 Oct standby guard should help. Also step 3 compares timer bits before/after, which HOME hides outside a work period — likely to false-fail; review before re-running.
 - [ ] **Auto-wrap** of Send Keypad Menu Path and `automower/keys` as `[r … r s]` — sequences in the log are wrapped correctly; not separately tested.
 
@@ -77,6 +86,7 @@ The design:
   - A stall at 18:15 showed blade current ~1.5A just before the fault.
   - 9 Oct 15:36: code 15 "Mower lifted" while going home, ~1 min after two back-to-back `[rmh1s]` hatch sequences; recovered and docked by 15:37. Either the shell/bumper again or the hatch emulation while driving — avoid sending hatch sequences while the mower is moving.
   - **Stopped on the lawn (4 Nov 14:09):** 0x12 b0 `01`, b1 `00` (not on the charger), b2 `05`, b4 `24`, inside a work period, no fault — sat there 1 h 45 min unnoticed. Alert after ~5 min in that state. Nothing else in 0x12/0x14 flags it.
+  - **No loop signal (7 Nov 17:59):** state `08` + fault code 2 right after leaving the station, then periodic ~35 s wakes every ~5.5 min while off the charger and draining (~−90 mA). Alert at once on `08` + code 2, and again if the pack keeps falling.
   - Other triggers: fault + draining + off charger; AUX1 goes dark while out mowing without a home command; long `03` without finding the guide (test C1); state `08` lasting more than ~15 min.
 - [ ] **Unexplained-stop capture** (evidence for "Unexplained stops" below). When b2 goes `06`/`07` → `05` while off the charger (b1 bit3 clear) and the ESP sent no key sequence or hatch change in the last ~30 s: log `WARN stop: unexplained` with the last ~60 s of 0x14/02/03/04 frames and the 0x12 frame (keep a small ring buffer), publish to an `Automower Last Stop` text sensor, and fire the ntfy automation. Also count them (`Automower Unexplained Stops`, kept in flash). Optionally poll 0x12 every 10 s while mowing (now 30 s) to time the stop more tightly.
 - [ ] **Grass growth / skip-day tracking.** Needs a baseline of daily blade-current averages first (Last Mow Blade Current long-term stats). Watch for wet-grass effects. 28 Sep reference: ~2,900 rpm, current median 254mA, p95 459. Could later drive Skip Today automatically.
@@ -95,6 +105,7 @@ The design:
 
 ## Hardware / installation
 - [ ] **WiFi.** Still weak: roam scans at −84 to −92 dBm while mowing and docked, regular MQTT offline/online drops (and lost log lines) — 370 offline events 2 Oct – 3 Nov, roam scans mostly −84 to −92 dBm. No resets since 2 Oct though. Improve AP placement or fit an external antenna. Needed before the test session (flight-recorder dumps are bursty).
+- [ ] **Loop signal lost 7 Nov between 16:58 and 17:58** with the station still powered (charging until at least 17:53). Find the cause: station LED, loop/guide wire continuity, any damage along Saturday's mowing. Record what it was here.
 - [ ] **Bumper/shell sticking lifted** (mechanical): stuck twice in one mow on 28 Sep; possible repeat 9 Oct 15:36. Check the shell moves freely on its mounts.
 - [ ] **Stop button / lid microswitch worn:** recloses with the lid open (17 Oct). Parts above.
 - [ ] **Unexplained stops mid-mow — keep watching, collect evidence.** Suspect: the stop loop opening briefly while driving. Two things are in that loop: the worn lid microswitch, and the ESP's B2R8 NC relay contact + its splice. The log can't tell them apart.
@@ -136,7 +147,7 @@ The design:
 - Stats: confirm mow/search hours against the display; bytes 6–7; production date.
 - The status-05 commands (`08 0A 1C 24 26 2A 2C 2E`): a service PIN, or unimplemented?
 - Undecoded: 0x16 details, 0x28, 0x02 b2/b5, status codes 01/04.
-- Fault codes: capture the screen text + frames whenever a fault occurs. Known: 2 = No loop signal, 15 = Mower lifted; 19 likely "Collision sensor problem" (5 Oct trampoline, screen not confirmed).
+- Fault codes: capture the screen text + frames whenever a fault occurs. Known: 2 = No loop signal (also 7 Nov 17:59, record `E9 66 EF 6A 02 00 02 FD 00 12`), 15 = Mower lifted; 19 likely "Collision sensor problem" (5 Oct trampoline, screen not confirmed).
 - An AUX1-visible signal for the first-boot wizard (not planned — too risky).
 - Measure AUX1 pin 7 (~18V).
 - **Never sweep 0x10 or 0x36** — they are actions, not reads.
