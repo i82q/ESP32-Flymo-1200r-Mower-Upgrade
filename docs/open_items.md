@@ -91,11 +91,6 @@ Tests:
 - [ ] **11:00 starts are still unreliable.** Mon 5 Oct: AUX1 woke 11:04, charging, back to standby 11:07, no departure. Tue 6 Oct: nothing at 11:00 (cause found 6 Oct: top-up/hatch wakes without Start had left it stopped, b4 `47`). Wed 7 Oct: on time. 12 Oct: woke 10:59:54 for 5 s and slept again — HOME was selected.
 - [ ] **Who started the mower Fri 9 Oct 14:50?** Mode went from HOME (08) to AUTO (06) with no ESP key sequence. If that was by hand at the mower, fine; otherwise investigate.
 
-## Built 10 Oct, to test
-- [ ] **Skip Today** button + `Automower Skip` sensor: `[rmh1s]` now, `[rmh2s]` at 23:00 (`skip_rearm_*`), verified by mode bits, retried every 10 min ×6, cancelled by any mode button, pending flag in flash. Timer untouched. Test: press while docked → HOME; at 23:00 → AUTO + next start. Then once while mowing.
-- [ ] Optional HA ntfy automation on `Automower Skip` containing "FAILED" / "NOT confirmed".
-- [ ] Once Skip Today works: decide whether to retire Park / Restore Timer / Timer Auto Restore (Skip covers the day-to-day use without rewriting the timer).
-
 ## Built 2 Oct — Phase 0 results so far (test_build_plan.md)
 - [x] **Park (all work days off) — answered 7 Nov: it does NOT park, it removes the schedule.** After the 6 Nov park, AUTO showed timer bits `0` (no restriction, same as the 13 Oct cleared timer) and the mower went out every time it was charged, including after dark. **Retire Park / Timer Auto Restore**, or rebuild "parked" on the 17 Oct design (AUTO selected, stopped, no Start). Never leave the mower in AUTO after a Park.
 - [ ] **Keypad Self Test 5 Oct: FAIL** — step 1 HOME ok; step 2 got no reply because AUX1 dropped into standby mid-sequence (11:27:17). The 5 Oct standby guard should help. Also step 3 compares timer bits before/after, which HOME hides outside a work period — likely to false-fail; review before re-running.
