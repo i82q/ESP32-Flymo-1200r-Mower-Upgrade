@@ -1307,9 +1307,11 @@ script:
   # state, skip the keys; otherwise play them and check the state (docked:
   # wait up to 90 min; others: read 2s after the lid closes, again 6s later).
   # Stops at the first failed step. Result in "Automower Command" + the log.
-  # mode: single - a second command while one runs is rejected.
+  # mode: queued - a command sent while one runs waits its turn (max 3
+  # waiting; more are dropped with a log warning).
   - id: run_command
-    mode: single
+    mode: queued
+    max_runs: 4
     parameters:
       name: string
       steps: string

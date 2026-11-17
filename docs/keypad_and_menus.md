@@ -120,6 +120,7 @@ One routine, `run_command`, plays a command: steps separated by `;`, each `keys>
 - **Before each step** it reads 0x12. If the mower is already in the expected state, the keys are skipped.
 - **After the keys** it checks the state: `docked` waits up to 90 min; the others read 2 s after the lid closes and again 6 s later.
 - It stops at the first failed step. Result in **Automower Command** and the log (`[I][cmd]`).
+- Commands queue: one sent while another runs (switch, Send, MQTT) waits its turn, up to 3 waiting.
 
 | Expected | Meaning (0x12) |
 |---|---|
