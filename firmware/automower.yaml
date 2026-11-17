@@ -197,7 +197,7 @@ debug:
 globals:
   - id: automower_pin_global
     type: uint16_t
-    initial_value: "${automower_pin}"
+    initial_value: "uint16_t(${automower_pin})"   # text around it, so the PIN works quoted or not in secrets.yaml
   - id: key_buffer
     type: std::string
     initial_value: '""'
