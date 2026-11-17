@@ -2,7 +2,7 @@
 
 The single list of what's left. When an item is done, delete it here and record the result in the relevant reference doc. Tests that need the real installation are planned in `test_build_plan.md`; this file only points to them.
 
-_Last tidied: 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written). 17 Oct: "No Mow" flag + mailbox design added; mower parked for new grass seed. 3 Nov: capture log 10 Oct – 3 Nov reviewed (see "Log review 10 Oct – 3 Nov" below). 4 Nov: unexplained stop on the lawn — evidence log under Hardware. 8 Nov: capture log 3–8 Nov reviewed — Park clears the timer, no-loop fault 7 Nov._
+_Last tidied: 17 Nov 2026 (controls tidied, Park/Mow switch + run_command — branch). 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written). 17 Oct: "No Mow" flag + mailbox design added; mower parked for new grass seed. 3 Nov: capture log 10 Oct – 3 Nov reviewed (see "Log review 10 Oct – 3 Nov" below). 4 Nov: unexplained stop on the lawn — evidence log under Hardware. 8 Nov: capture log 3–8 Nov reviewed — Park clears the timer, no-loop fault 7 Nov._
 
 ## Working now (firmware 25 Sep – 5 Oct)
 - **AUX1 telemetry:** status, battery, tilt/collision, stats, blade and wheel telemetry. PIN login with auto-relogin.
@@ -19,7 +19,13 @@ _Last tidied: 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written).
 - **Capture logging:** HA File notify + automation on `automower/#`. NB lines can be lost during MQTT reconnects on the lawn.
 - **No unplanned ESP resets 2 Oct – 3 Nov** (all reboots were OTA or low-pack deep-sleep wakes; ESPHome 2026.10.0 since 22 Oct). The 21 "task watchdog" reset reasons in the capture log are stale retained topics replayed on HA restarts (uptime always 1562) — see Housekeeping.
 
-## Current state (8 Nov 11:23)
+## Current state (17 Nov 13:30)
+- **Parked: AUTO selected, lid closed without Start, charging** (`04 0C 05 00`, 1.11 A, 18.4 → 18.7 V in 12 min). Set by hand at 12:58. Timer still has all work days off from the 13 Nov Park (= no restriction).
+- **8–17 Nov:** mowed on the timer 9–13 Nov (2 cycles/day; 9 Nov 11:14 code 15 "Mower lifted", recovered). 13 Nov 13:20 Park pressed mid-mow with HOME selected → docked in HOME. Pack down to 17.5 V by 15 Nov 20:31; the ESP then woke hourly and slept again (42 times). **In HOME the mower never charged** — the manual says HOME stays docked, nothing about topping up.
+- **What kept it charged in October** (13 Oct – 2 Nov, same AUTO-without-Start state): the mower never woke by itself. Every wake was the 02:00 top-up or the ESP coming out of its 1 h low-pack sleep (mower awake 57–59 min after each sleep started: the ESP boot briefly opens the stop loop). Each wake charged it to full (~1.1 A, 17.8 → 20.3 V in ~2 h; 45–68 min from ~19 V). So: **parked = AUTO, lid closed without Start, Nightly Top-up on.** In HOME the same wakes do nothing (sleeps after ~16 s) — this week's hourly ESP boots show exactly that.
+- Unexplained: two short wakes 22 Oct 18:55 and 19:14 (~7 min each, no charging, no ESP action).
+
+## Earlier state (8 Nov 11:23)
 - **Out of action since Sat 7 Nov 17:58: no loop signal, not charging.** It left the station at 17:58 (`05 0F`), went straight to state `08` "waiting for loop signal" (b1 `00`, off the charger — probably just in front of the station) and logged **fault code 2 "No loop signal"** at 17:59 (0x18 record `E9 66 EF 6A 02 00 02 FD 00 12 …`). Since then AUX1 wakes for ~35 s every ~5.5 min to look for the signal; status alternates `08 00 06 00 47` / `08 00 06 00 00`.
 - **When the loop was lost:** after 16:58 (it docked by following the guide wire, so the signal was there) and before 17:58. The station still had power at 17:53 (charging ~393 mA, pack 20.48 V). So a power cut is unlikely — suspect a **boundary/guide wire break** or the station's loop output. Check the station LED, then the wire.
 - **Battery:** 20.48 V (17:53 Sat) → 19.25 V (11:00 Sun), ~−90 mA, ~0.06 V/h. At that rate it reaches the ESP's 17.5 V deep-sleep threshold around **Mon 9 Nov evening** — fix before then.
@@ -61,8 +67,24 @@ The design:
   - Every wake (top-up, sync, mailbox) presses Start **only if no_mow is off**.
   - Could replace HOME / Park / Skip Today for day-to-day use, and is what the rain automation would toggle.
 - [ ] **`automower/queue` retained command mailbox:** HA posts a command (key sequence, `sync_time`, timer string…); on the next wake with AUX1 ready and the mower docked, the ESP runs it, publishes the outcome to `automower/queue_result`, then clears the retained message. Failed → keep it and retry next wake. Whitelist command types; never act while the mower is moving.
-- [ ] **Top-up fixes:** run when the state is unknown after a restart (wake and check), and apply the no_mow rule for Start.
+- [x] **Top-up after a restart** — fixed 17 Nov (`docked_known`). The no_mow flag / mailbox were dropped in favour of the Mowing switch + `run_command` (17 Nov).
 - [ ] **ESP sleeps with the mower** (wake on AUX1 via GPIO4 or every 15–30 min to check MQTT) — cuts the ~0.6 Ah/night drain; pairs naturally with the retained flag and mailbox.
+
+## Built 17 Nov, to test (branch `park-switch-and-tidy`)
+Not compiled here (no PlatformIO access): `esphome config` passes, all lambdas compile on the host against stub ESPHome types, and the state decoder was checked against real 0x12 frames.
+- **`run_command`**: plays `keys>expected; ...` steps, skipping a step whose state is already met, checking each result from 0x12 — see keypad_and_menus.md "Commands". Keypad Menu Path and MQTT `automower/keys` use it too.
+- **Automower Mowing** switch: off = `cmd_park` (`[rmh1s]>docked; [rmh2]>auto_stopped`), on = `cmd_mow` (`[rmh2s]>auto_armed`). Timer untouched.
+- Nightly top-up no longer skips "not docked" after an ESP restart (`docked_known`, kept in flash).
+- Removed: see keypad_and_menus.md "Home Assistant controls". The old `mowing-switch-and-mailbox` branch is superseded (GitHub refused the delete from here — delete it by hand).
+
+Tests:
+- [ ] Flash while docked and charging. **Turn Nightly Top-up on.**
+- [ ] Mowing off while docked → `[rmh1s]>docked` skipped, `[rmh2]>auto_stopped ok`. Confirms `[rmh2]` (no Start) selects AUTO — never tried by the ESP before.
+- [ ] Next mornings: 02:00 top-up charges it (`Automower Top-up`: charging … mA).
+- [ ] **Does parked hold with the normal timer set?** Restore the timer by hand (or Keypad Menu Path `m1111001530o r m1200000000o r m13867b`), park, watch the next 11:00. 6 Oct: stopped + timer → didn't start (b4 `47`); 3 Nov: stopped (b4 `00`/`24`) + timer → left at 11:06. Until this is known, keep the timer empty while parked.
+- [ ] Mowing on → `[rmh2s]>auto_armed ok`, leaves at the next start.
+- [ ] Mowing off while it's out → HOME + Start, docks, then AUTO without Start.
+- [ ] Mowing off while stopped on the lawn (like 4 Nov) → `docked` not met (last seen moving) → sent home.
 
 ## Check first
 - [ ] **Flash the 10 Oct build (Skip Today + timer-check fix)** and test Skip Today → keypad_and_menus.md "Skip Today". (Superseded for now by the no_mow design — decide whether Skip Today stays.)
@@ -101,7 +123,7 @@ The design:
   - Then hide most of the button clutter from the device page.
 - [ ] **Rename the ESPHome `friendly_name`** from "Automower AUX1 Bridge" to something shorter and more useful (e.g. "Automower"). Check how HA displays entity names that already start with "Automower" before choosing, and that existing entity IDs (used by automations) stay unchanged.
 - [ ] **Tidy-up (no behaviour change):** remove the dead globals `tc_park` and `tu_manual`; move the "Changes 5 Oct / 10 Oct" header comments into the docs; factor the repeated "publish Next Start" code (now ×5) and battery read (×2) into helpers in `aux1_protocol.h`; replace the key-language comment block with a pointer to `keypad_and_menus.md`.
-- [ ] **Optional cuts, to decide then:** the 17 single-key buttons (Keypad Menu Path with `!` covers them); Status Byte3/Byte4 numeric sensors; the `pair:` voltage log line (low-voltage pairs are now in, down to 17.56 V — can go).
+- [ ] **Optional cuts:** the `pair:` voltage log line (low-voltage pairs are now in, down to 17.56 V — can go). (Single-key buttons and Status Byte3/Byte4 removed 17 Nov.)
 - [ ] Project file naming: the device's file is `mower.yaml` in the ESPHome builder; the project keeps it as `automower.yaml`.
 
 ## Hardware / installation

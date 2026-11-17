@@ -17,35 +17,23 @@
 # AUX1 traffic is gated in aux1_protocol.h: only while AUX1 is powered, 20s
 # after it powers up (first-boot wizard guard), and while "AUX1 Polling" is on.
 #
-# Changes 5 Oct (draft, to test):
-#   - Nightly top-up: wakes the docked mower once a night so it charges (it
-#     does not charge in standby, and the ESP32 drains the pack ~0.6Ah/night).
-#     Also checks the mower clock then and syncs it if it is >30s out (catches
-#     drift and the BST change). Off by default: "Nightly Top-up" switch.
-#   - ESP32 deep-sleep threshold 17V -> 17.5V.
-#   - ESP32 SNTP every 6h instead of every 15 min (log noise).
-#   - State 08 = "waiting for loop signal".
-#   - Key engine: if the mower drops to standby while the hatch is open
-#     mid-sequence, the sequence is replayed once from its '[' (with a wake).
-#   - Timer control re-reads once before declaring a park/restore unconfirmed.
-#   - Sync Time wakes the mower first instead of failing silently.
-#   - Automower Last Fault: the mower's event record (Husqvarna fault code),
-#     read automatically on each fault / loop-signal wait.
-#   - A fault ongoing across an ESP reboot is no longer counted twice.
-#   - Raw Response starts with the time it was received.
-#   - Each AUX1 battery poll logs a paired raw ADC reading ("pair:") for
-#     checking pack_multiplier below 19.8V.
-#
-# Changes 10 Oct:
-#   - Skip Today button: HOME now, back to AUTO at 23:00 (skip_rearm_*; the
-#     timer is not touched). Retried every 10 min, max 6. "Automower Skip"
-#     shows the state. Mode Home / Auto / Man cancel a pending skip, so a
-#     deliberate Home is never undone. Plain Mode Home is unchanged (sticky).
-#   - Restore Timer check: with HOME selected the timer never reads "waiting"
-#     and Next Start is only shown for a few seconds after the lid closes (9 Oct: six
-#     "failed" restores that had all worked). A restore now counts as
-#     confirmed when a next start is shown; with HOME selected it says so.
-#     A park with HOME selected is reported as "can't be verified", not a fault.
+# Changes 17 Nov (tidy + Park/Mow switch, to test). Earlier change notes are
+# in git history and docs/open_items.md.
+#   - One routine, run_command: plays keypad steps and checks each result
+#     from AUX1 0x12 ("keys>expected; ..."). Commands are strings in the
+#     substitutions (cmd_park, cmd_mow); Keypad Menu Path and MQTT
+#     automower/keys use the same routine.
+#   - "Automower Mowing" switch: OFF = park (HOME + Start to send it home if
+#     it isn't docked, then AUTO with the lid closed WITHOUT Start - docked,
+#     waiting for Start; every wake charges it to full). ON = mow (AUTO +
+#     Start). The timer is never touched. Result in "Automower Command".
+#   - Nightly top-up no longer skips "not docked" after an ESP restart.
+#   - Removed: Mode Home/Auto/Man, Park (timer off), Restore Timer, Skip Today,
+#     Keypad Self Test, Sync Time, AUX1 Stop/Home buttons, the 17 single-key
+#     buttons, Timer Auto Restore, Timer Control / Skip / Self Test text
+#     sensors, Status Byte3/Byte4 sensors. Keypad Menu Path still plays any
+#     key; docs/keypad_and_menus.md has the single-key buttons to paste back.
+#   - Automower Hatch moved to the configuration section.
 
 substitutions:
   automower_pin: !secret automower_pin   # mower PIN, digits only (secrets.yaml)
@@ -67,18 +55,22 @@ substitutions:
   # Extra wait after '[' when the mower was in standby: AUX1 powers up in ~1s
   # but the screen takes a few seconds before it accepts keys.
   wake_wait_ms: "8500"   # + hatch_settle_ms 1500 = 10s total after a wake (measured 1 Oct)
-  # Timer control (keypad_and_menus.md -> "Timer control"). Menu bodies only:
-  # the ESP plays them wrapped as [r ... r s]. timer_normal is YOUR normal
-  # schedule - keep it in step with the timer set on the mower, because
-  # Restore Timer and the self-test write it back to the mower.
-  timer_normal: "m1111001530o r m1200000000o r m13867b"   # WH1 11:00-15:30, WH2 off, Mon-Fri
-  timer_park: "m138 1234567 b"                             # Work days: all on, then all toggled off
-  timer_restore_hour: "23"                                 # auto restore time after a Park
-  timer_restore_minute: "00"
-  # Skip Today: when HOME is switched back to AUTO. Must be outside the work
-  # hours, so AUTO just waits on the charger for the next start.
-  skip_rearm_hour: "23"
-  skip_rearm_minute: "00"
+  # Commands, played by run_command: steps separated by ';', each
+  # "keys>expected". Keys use the Keypad Menu Path language. Before a step,
+  # if the mower is already in the expected state, its keys are skipped;
+  # after them the state is checked from AUX1 0x12. Expected states:
+  #   docked        on the charger (waits up to 90 min for it to get there)
+  #   auto_stopped  AUTO selected, not started (b2 05) - waiting for Start
+  #   auto_armed    AUTO selected and started (b2 06), or leaving / mowing
+  #   home / man    that mode selected
+  #   (none)        no check
+  # A new command is just a new string here (plus a button/switch for it).
+  #   park: HOME + Start sends it home (skipped if already docked), then AUTO
+  #         selected and the lid closed WITHOUT Start: docked, waiting for
+  #         Start, and every wake (Nightly Top-up) charges it to full.
+  #   mow:  AUTO + Start. The timer decides when it goes out.
+  cmd_park: "[rmh1s]>docked; [rmh2]>auto_stopped"
+  cmd_mow: "[rmh2s]>auto_armed"
   # Nightly top-up (see the nightly_topup script).
   topup_hour: "2"
   topup_minute: "0"
@@ -95,9 +87,6 @@ esphome:
     priority: -100
     then:
       - script.execute: publish_last_mow
-      - lambda: |-
-          aux1::pub(id(automower_timer_control), id(timer_parked) ? "parked (restore pending)" : "normal timer");
-          aux1::pub(id(automower_skip), id(skip_pending) ? "skipping - back to AUTO at ${skip_rearm_hour}:${skip_rearm_minute}" : "off");
 
 esp32:
   board: esp32dev
@@ -161,9 +150,10 @@ mqtt:
             aux1::set_mode(id(aux1_uart), (uint8_t) mode, id(automower_pin_global));
     - topic: automower/keys
       then:
-        - script.execute:
-            id: key_sequence
-            seq: !lambda "return aux1::wrap_sequence(x);"   # [r ... r s] unless it starts with [ or !
+        - script.execute:   # same as Keypad Menu Path: "keys>expected; ..."
+            id: run_command
+            name: "mqtt keys"
+            steps: !lambda "return x;"
 
 uart:
   id: aux1_uart
@@ -187,35 +177,6 @@ time:
     timezone: "GMT0BST,M3.5.0/1,M10.5.0"
     update_interval: 6h   # default is 15 min - ~96 log lines a day for nothing
     on_time:
-      # Auto restore after a Park (see Timer control in keypad_and_menus.md).
-      - hours: ${timer_restore_hour}
-        minutes: ${timer_restore_minute}
-        seconds: 0
-        then:
-          - if:
-              condition:
-                lambda: "return id(timer_parked) && id(timer_auto_restore).state;"
-              then:
-                - logger.log: {format: "Timer control: scheduled restore of the normal timer", tag: timer}
-                - lambda: |-
-                    id(restore_due) = true;
-                    id(restore_attempts) = 0;
-                - script.execute: {id: timer_apply, park: false}
-      # Skip Today: back to AUTO (if a restore runs at the same time, the
-      # re-arm waits for it).
-      - hours: ${skip_rearm_hour}
-        minutes: ${skip_rearm_minute}
-        seconds: 0
-        then:
-          - if:
-              condition:
-                lambda: "return id(skip_pending);"
-              then:
-                - logger.log: {format: "Skip Today: scheduled switch back to AUTO", tag: skip}
-                - lambda: |-
-                    id(skip_due) = true;
-                    id(skip_attempts) = 0;
-                - script.execute: skip_rearm
       # Nightly top-up (only when the Nightly Top-up switch is on).
       - hours: ${topup_hour}
         minutes: ${topup_minute}
@@ -266,71 +227,44 @@ globals:
   - id: last_state_code
     type: uint8_t
     initial_value: "0"
-  # Timer control. timer_parked = the Park sequence was sent and the normal
-  # timer has not been confirmed back yet. restore_due = a restore is wanted
-  # (scheduled time or button); retried every 10 min, max 6 attempts.
-  - id: timer_parked
+  # Park / Mow switch setting (kept in flash).
+  - id: pm_mow
     type: bool
     restore_value: true
     initial_value: "false"
-  - id: restore_due
-    type: bool
-    restore_value: true
-    initial_value: "false"
-  - id: restore_attempts
-    type: int
-    initial_value: "0"
-  - id: tc_seq
+  # run_command state (see the script).
+  - id: cmd_name
     type: std::string
     initial_value: '""'
-  - id: tc_park
+  - id: cmd_steps
+    type: std::string
+    initial_value: '""'
+  - id: cmd_keys
+    type: std::string
+    initial_value: '""'
+  - id: cmd_expect
+    type: std::string
+    initial_value: '""'
+  - id: cmd_play
     type: bool
     initial_value: "false"
-  - id: tc_try
-    type: int
-    initial_value: "0"
-  - id: tc_done
+  - id: cmd_ok
     type: bool
     initial_value: "false"
-  # Keypad self-test.
-  - id: st_ok
+  - id: cmd_log
+    type: std::string
+    initial_value: '""'
+  - id: cmd_recheck
     type: bool
+    initial_value: "false"
+  # Last known: on the charger (0x12 state 04 or b1 bit3 seen since it last
+  # moved). Kept in flash. Needed because 0x12 "01 00" reads the same docked
+  # and fully charged as stopped out on the lawn (4 Nov).
+  - id: docked_known
+    type: bool
+    restore_value: true
     initial_value: "true"
-  - id: st_step
-    type: int
-    initial_value: "0"
-  - id: st_seq
-    type: std::string
-    initial_value: '""'
-  - id: st_report
-    type: std::string
-    initial_value: '""'
-  - id: st_prev_timer
-    type: uint8_t
-    initial_value: "0xFF"
-  # Skip Today. skip_pending = HOME was set by Skip Today and AUTO is still to
-  # be restored (kept in flash). skip_due = the re-arm time has passed and the
-  # switch back to AUTO is being attempted (retried every 10 min, max 6).
-  - id: skip_pending
-    type: bool
-    restore_value: true
-    initial_value: "false"
-  - id: skip_due
-    type: bool
-    restore_value: true
-    initial_value: "false"
-  - id: skip_attempts
-    type: int
-    initial_value: "0"
-  - id: sk_go
-    type: bool
-    initial_value: "false"
-  - id: sk_try
-    type: int
-    initial_value: "0"
-  - id: sk_done
-    type: bool
-    initial_value: "false"
+
   # Nightly top-up.
   - id: tu_skip
     type: std::string
@@ -419,43 +353,6 @@ globals:
 # Every lambda returns early (no traffic) when the gate is closed.
 # ---------------------------------------------------------------------------
 interval:
-  # Timer control retry: a wanted restore that hasn't been confirmed yet.
-  - interval: 600s
-    then:
-      - if:
-          condition:
-            lambda: "return id(restore_due) && id(timer_parked) && !id(timer_apply).is_running() && !id(self_test).is_running() && !id(nightly_topup).is_running();"
-          then:
-            - if:
-                condition:
-                  lambda: "return id(restore_attempts) >= 6;"
-                then:
-                  - lambda: |-
-                      id(restore_due) = false;
-                      ESP_LOGW("timer", "Timer control: restore FAILED after 6 attempts - check the timer on the mower");
-                      aux1::pub(id(automower_timer_control), "RESTORE FAILED - check the timer on the mower");
-                else:
-                  - script.execute: {id: timer_apply, park: false}
-
-  # Skip Today retry: back to AUTO not confirmed yet.
-  - interval: 600s
-    then:
-      - if:
-          condition:
-            lambda: "return id(skip_due) && id(skip_pending) && !id(skip_rearm).is_running() && !id(skip_today).is_running() && !id(timer_apply).is_running() && !id(self_test).is_running() && !id(nightly_topup).is_running();"
-          then:
-            - if:
-                condition:
-                  lambda: "return id(skip_attempts) >= 6;"
-                then:
-                  - lambda: |-
-                      id(skip_due) = false;
-                      id(skip_pending) = false;
-                      ESP_LOGW("skip", "Skip Today: switch back to AUTO FAILED after 6 attempts - mower left in HOME");
-                      aux1::pub(id(automower_skip), "FAILED - still in HOME, press Mode Auto");
-                else:
-                  - script.execute: skip_rearm
-
   # Traffic gate + standby state.
   - interval: 1s
     then:
@@ -518,6 +415,9 @@ interval:
               }
             }
           }
+          // On the charger or not, remembered across restarts (docked_known).
+          if (p[0] == 0x04 || (n >= 2 && (p[1] & 0x08))) id(docked_known) = true;
+          else if (p[0] == 0x02 || p[0] == 0x03 || p[0] == 0x05 || p[0] == 0x07 || p[0] == 0x08) id(docked_known) = false;
           // b3 low bits = timer state.
           if (n >= 4) {
             switch (p[3] & 0x03) {
@@ -527,8 +427,6 @@ interval:
               default: aux1::pub(id(automower_timer), "unknown 3"); break;
             }
           }
-          if (n >= 4) aux1::pub(id(automower_status_byte3), p[3]);
-          if (n >= 5) aux1::pub(id(automower_status_byte4), p[4]);
 
           // Mow day tracking (see globals). One session per mowing day: it
           // starts at the first mowing frame, charge stops inside the work
@@ -821,20 +719,6 @@ sensor:
     accuracy_decimals: 0
     update_interval: never
 
-  # Status (0x12) undecoded bytes, for correlating against events.
-  - platform: template
-    id: automower_status_byte3
-    name: "Automower Status Byte3"
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    update_interval: never
-  - platform: template
-    id: automower_status_byte4
-    name: "Automower Status Byte4"
-    accuracy_decimals: 0
-    entity_category: diagnostic
-    update_interval: never
-
   # Tilt (0x14/04), 0.1 deg per count, right roll positive.
   - platform: template
     id: automower_tilt_x
@@ -995,24 +879,12 @@ text_sensor:
     name: "Automower Next Start"
     icon: mdi:calendar-clock
     update_interval: never
-  # Timer control state: normal timer / parked ... / restoring ... / FAILED.
+  # Result of the last command (run_command), e.g.
+  # "Tue 13:40 park OK: [rmh1s]>docked skipped (already); [rmh2]>auto_stopped ok".
   - platform: template
-    id: automower_timer_control
-    name: "Automower Timer Control"
-    icon: mdi:calendar-lock
-    update_interval: never
-  # Skip Today: off / skipping - back to AUTO at 23:00 / back to AUTO ...
-  # (next start) / FAILED ...
-  - platform: template
-    id: automower_skip
-    name: "Automower Skip"
-    icon: mdi:calendar-remove
-    update_interval: never
-  # Result of the last keypad self test (PASS/FAIL + per-step detail).
-  - platform: template
-    id: automower_self_test
-    name: "Automower Self Test"
-    icon: mdi:clipboard-check-outline
+    id: automower_command
+    name: "Automower Command"
+    icon: mdi:keyboard-outline
     update_interval: never
   # Result of the last top-up wake, e.g.
   # "Tue 02:00: pack 19.1V, charging 1015mA, clock +3s ok".
@@ -1086,16 +958,6 @@ switch:
     restore_mode: ALWAYS_ON
     entity_category: config
 
-  # Timer control: restore the normal timer automatically at
-  # ${timer_restore_hour}:${timer_restore_minute} after a Park. Off = parked until Restore Timer.
-  - platform: template
-    id: timer_auto_restore
-    name: "Timer Auto Restore"
-    icon: mdi:calendar-refresh
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_ON
-    entity_category: config
-
   # Nightly top-up at ${topup_hour}:${topup_minute}. Off by default until
   # the manual test (Automower Top-up Now) has shown it charges.
   - platform: template
@@ -1105,6 +967,28 @@ switch:
     optimistic: true
     restore_mode: RESTORE_DEFAULT_OFF
     entity_category: config
+
+  # Park / Mow (17 Nov). OFF = the "park" command, ON = the "mow" command
+  # (substitutions cmd_park / cmd_mow, played by run_command).
+  # The setting lives in pm_mow (flash). No restore_mode: a restoring
+  # template switch replays its action at every boot, i.e. every deep-sleep
+  # wake - the lambda just shows pm_mow.
+  - platform: template
+    id: automower_mowing
+    name: "Automower Mowing"
+    icon: mdi:robot-mower
+    lambda: "return id(pm_mow);"
+    restore_mode: DISABLED
+    turn_on_action:
+      - lambda: |-
+          id(pm_mow) = true;
+          id(automower_mowing).publish_state(true);
+      - script.execute: {id: run_command, name: "mow", steps: "${cmd_mow}"}
+    turn_off_action:
+      - lambda: |-
+          id(pm_mow) = false;
+          id(automower_mowing).publish_state(false);
+      - script.execute: {id: run_command, name: "park", steps: "${cmd_park}"}
 
   # Relays - internal only; HA sees the momentary buttons below.
   # Active-low boards, so inverted: true ("off" = de-energised).
@@ -1142,6 +1026,7 @@ switch:
     id: automower_hatch
     name: "Automower Hatch"
     icon: mdi:door-open
+    entity_category: config   # testing only - off the Controls card
     optimistic: true
     restore_mode: ALWAYS_OFF
     turn_on_action:
@@ -1155,106 +1040,22 @@ switch:
 # Buttons
 # ---------------------------------------------------------------------------
 button:
-  # Single keys. All go through key_sequence, so a key pressed while a
-  # sequence is playing is rejected (logged), never interleaved.
-  - {platform: template, name: "Keypad Digit 0", on_press: [{script.execute: {id: key_sequence, seq: "0"}}]}
-  - {platform: template, name: "Keypad Digit 1", on_press: [{script.execute: {id: key_sequence, seq: "1"}}]}
-  - {platform: template, name: "Keypad Digit 2", on_press: [{script.execute: {id: key_sequence, seq: "2"}}]}
-  - {platform: template, name: "Keypad Digit 3", on_press: [{script.execute: {id: key_sequence, seq: "3"}}]}
-  - {platform: template, name: "Keypad Digit 4", on_press: [{script.execute: {id: key_sequence, seq: "4"}}]}
-  - {platform: template, name: "Keypad Digit 5", on_press: [{script.execute: {id: key_sequence, seq: "5"}}]}
-  - {platform: template, name: "Keypad Digit 6", on_press: [{script.execute: {id: key_sequence, seq: "6"}}]}
-  - {platform: template, name: "Keypad Digit 7", on_press: [{script.execute: {id: key_sequence, seq: "7"}}]}
-  - {platform: template, name: "Keypad Digit 8", on_press: [{script.execute: {id: key_sequence, seq: "8"}}]}
-  - {platform: template, name: "Keypad Digit 9", on_press: [{script.execute: {id: key_sequence, seq: "9"}}]}
-  - {platform: template, name: "Keypad Start",   on_press: [{script.execute: {id: key_sequence, seq: "s"}}]}
-  - {platform: template, name: "Keypad Home",    on_press: [{script.execute: {id: key_sequence, seq: "h"}}]}  # tap = cycle HOME/AUTO/MAN
-  - {platform: template, name: "Keypad Next",    on_press: [{script.execute: {id: key_sequence, seq: "m"}}]}
-  - {platform: template, name: "Keypad Back",    on_press: [{script.execute: {id: key_sequence, seq: "b"}}]}
-  - {platform: template, name: "Keypad OK",      on_press: [{script.execute: {id: key_sequence, seq: "o"}}]}
-  - {platform: template, name: "Keypad Return",  on_press: [{script.execute: {id: key_sequence, seq: "r"}}]}  # hold Home -> idle screen
-  - {platform: template, name: "Keypad Expert Mode", on_press: [{script.execute: {id: key_sequence, seq: "e"}}]}  # Tools/EXP; pauses AUX1 polling
-
-  # Operation mode the way a person does it: open hatch, Home hold (screen on,
-  # home screen - added 2 Oct), Menu, House, digit (1 HOME, 2 AUTO, 3 MAN),
-  # Start, close hatch. [mhNs] confirmed 28 Sep.
-  # Mode Home is sticky: the mower stays home until Auto or Man is chosen.
-  # Any of the three cancels a pending Skip Today (see mode_button).
-  - {platform: template, name: "Automower Mode Home", icon: "mdi:home-import-outline", on_press: [{script.execute: {id: mode_button, seq: "[rmh1s]"}}]}
-  - {platform: template, name: "Automower Mode Auto", icon: "mdi:robot-mower",         on_press: [{script.execute: {id: mode_button, seq: "[rmh2s]"}}]}
-  - {platform: template, name: "Automower Mode Man",  icon: "mdi:hand-back-right",     on_press: [{script.execute: {id: mode_button, seq: "[rmh3s]"}}]}
-
-  # Skip Today: HOME now (goes home if out, stays docked if not), then back to
-  # AUTO at ${skip_rearm_hour}:${skip_rearm_minute}, outside the work hours, so it waits for the next
-  # start. Pressed after ${skip_rearm_hour}:${skip_rearm_minute}, AUTO comes back the following night
-  # (i.e. tomorrow is skipped too).
-  - platform: template
-    name: "Automower Skip Today"
-    icon: mdi:calendar-remove
-    on_press:
-      - if:
-          condition:
-            lambda: "return id(key_sequence).is_running() || id(skip_today).is_running() || id(skip_rearm).is_running() || id(timer_apply).is_running() || id(self_test).is_running() || id(nightly_topup).is_running();"
-          then:
-            - logger.log: {format: "Skip Today: busy - ignored", level: WARN, tag: skip}
-          else:
-            - script.execute: skip_today
-
-  # Plays the Keypad Menu Path text. A leading digit gets Menu prepended
-  # (so "3231" = Menu,3,2,3,1). Then it is auto-wrapped as [r ... r s] unless
-  # it already starts with '[' (played as typed) or '!' (rest sent raw, no
-  # wrap - for single keys / diagnostics). See keypad_and_menus.md.
+  # Runs the Keypad Menu Path text as a command (run_command): one or more
+  # "keys>expected" steps separated by ';' (">expected" optional). A leading
+  # digit gets Menu prepended (so "3231" = Menu,3,2,3,1). Each step's keys are
+  # auto-wrapped as [r ... r s] unless they start with '[' (played as typed)
+  # or '!' (rest sent raw, no wrap - for single keys / diagnostics).
+  # e.g. "[rmh2]>auto_stopped". See keypad_and_menus.md.
   - platform: template
     name: "Send Keypad Menu Path"
     on_press:
       - script.execute:
-          id: key_sequence
-          seq: !lambda |-
-            std::string s = id(keypad_menu_path).state;
+          id: run_command
+          name: "menu path"
+          steps: !lambda |-
+            std::string s = aux1::trim(id(keypad_menu_path).state);
             if (!s.empty() && isdigit((unsigned char) s[0])) s = "m" + s;
-            return aux1::wrap_sequence(s);
-
-  # Timer control (keypad_and_menus.md -> "Timer control").
-  # Park: all work days off, so the mower goes home / stays home in AUTO.
-  # Restore: writes timer_normal back (also automatic at ${timer_restore_hour}:${timer_restore_minute}
-  # if "Timer Auto Restore" is on).
-  - platform: template
-    name: "Automower Park (timer off)"
-    icon: mdi:home-clock
-    on_press:
-      - if:
-          condition:
-            lambda: "return id(timer_apply).is_running() || id(self_test).is_running() || id(nightly_topup).is_running();"
-          then:
-            - logger.log: {format: "Timer control busy - Park ignored", level: WARN, tag: timer}
-          else:
-            - script.execute: {id: timer_apply, park: true}
-  - platform: template
-    name: "Automower Restore Timer"
-    icon: mdi:calendar-sync
-    on_press:
-      - if:
-          condition:
-            lambda: "return id(timer_apply).is_running() || id(self_test).is_running() || id(nightly_topup).is_running();"
-          then:
-            - logger.log: {format: "Timer control busy - Restore ignored", level: WARN, tag: timer}
-          else:
-            - lambda: |-
-                id(timer_parked) = true;   // so a failed restore is retried
-                id(restore_due) = true;
-                id(restore_attempts) = 0;
-            - script.execute: {id: timer_apply, park: false}
-  - platform: template
-    name: "Automower Keypad Self Test"
-    icon: mdi:clipboard-check-outline
-    on_press:
-      - if:
-          condition:
-            lambda: "return id(timer_apply).is_running() || id(self_test).is_running() || id(nightly_topup).is_running();"
-          then:
-            - logger.log: {format: "Self test: busy - ignored", level: WARN, tag: selftest}
-          else:
-            - script.execute: self_test
+            return s;
 
   # Top-up now: the same as the nightly run, but without the pack-full skip.
   # Use it docked, with the mower in standby (for the first test: after 15:30).
@@ -1264,35 +1065,11 @@ button:
     on_press:
       - if:
           condition:
-            lambda: "return id(nightly_topup).is_running() || id(timer_apply).is_running() || id(self_test).is_running();"
+            lambda: "return id(nightly_topup).is_running() || id(run_command).is_running();"
           then:
             - logger.log: {format: "Top-up: busy - ignored", level: WARN, tag: topup}
           else:
             - script.execute: {id: nightly_topup, manual: true}
-
-  # AUX1 mode commands (0x0E). Stop/Home work from AUX1 alone.
-  - platform: template
-    name: "Automower AUX1 Stop"
-    on_press:
-      - lambda: "aux1::set_mode(id(aux1_uart), 0x00, id(automower_pin_global));"
-  - platform: template
-    name: "Automower AUX1 Home"
-    on_press:
-      - lambda: "aux1::set_mode(id(aux1_uart), 0x02, id(automower_pin_global));"
-  # Writes the SNTP time and date to the mower. Wakes it first if needed
-  # (5 Oct: two presses failed silently with status FF while it was asleep).
-  - platform: template
-    name: "Automower Sync Time"
-    on_press:
-      - if:
-          condition:
-            lambda: "return id(key_sequence).is_running() || id(nightly_topup).is_running();"
-          then:
-            - logger.log: {format: "Sync Time: busy - ignored", level: WARN, tag: automower}
-          else:
-            - script.execute: wake_mower
-            - script.wait: wake_mower
-            - script.execute: sync_mower_time
 
   - platform: template
     name: "Send Raw Query"
@@ -1312,7 +1089,8 @@ text:
   #   w  wait one gap with no key     spaces ignored
   # Screen types: selection screens exit with r; value-entry screens need o
   # (or b to discard); Work days checkboxes exit with b.
-  # Send Keypad Menu Path / automower/keys auto-wrap the text as [r ... r s]
+  # Steps: "keys>expected; keys>expected" - see run_command / cmd_park.
+  # Send Keypad Menu Path / automower/keys auto-wrap each step as [r ... r s]
   # (lid open, Home hold, ..., Home hold, Start, lid closed) - see
   # keypad_and_menus.md. Text starting with '[' is played as typed; '!' = raw.
   # e.g. "1108101030o" = Work hours 1 08:10-10:30 (sent as [rm1108101030ors]);
@@ -1442,11 +1220,13 @@ script:
           id(tu_skip) = "";
           uint8_t s = id(last_state_code);
           float pack = id(automower_pack_voltage).state;
-          if (id(key_sequence).is_running() || id(timer_apply).is_running() || id(self_test).is_running())
+          if (id(key_sequence).is_running() || id(run_command).is_running())
             id(tu_skip) = "busy";
           else if (id(automower_aux1_awake).state)
             id(tu_skip) = "mower already awake";
-          else if (s != 0x01 && s != 0x04 && !(manual && s == 0x00))
+          // s 00 = not polled since an ESP restart: go by docked_known (16-17 Oct
+          // the top-up was skipped as "not docked" after restarts).
+          else if (s != 0x01 && s != 0x04 && !(s == 0x00 && (manual || id(docked_known))))
             id(tu_skip) = "not docked";
           else if (!manual && !std::isnan(pack) && pack > ${topup_skip_above})
             id(tu_skip) = "pack already full";
@@ -1522,355 +1302,123 @@ script:
                 then:
                   - script.execute: sync_mower_time
 
-  # Timer control: plays timer_park or timer_normal (wrapped), then checks the
-  # result from the long 0x12 frame while the mower is still awake (it can
-  # drop to standby ~15s after the lid closes). If the first read doesn't
-  # confirm it, it re-reads once 6s later (5 Oct: one restore read "no
-  # restriction" for an unknown reason).
-  #   Park OK    = timer state "waiting".
-  #   Restore OK = timer active ("in work period", or "waiting" with a next start).
-  # A failed restore stays due and is retried by the 10-min interval.
-  - id: timer_apply
+  # Runs a command: steps "keys>expected; keys>expected; ..." (see cmd_park
+  # in substitutions). For each step: read 0x12; if already in the expected
+  # state, skip the keys; otherwise play them and check the state (docked:
+  # wait up to 90 min; others: read 2s after the lid closes, again 6s later).
+  # Stops at the first failed step. Result in "Automower Command" + the log.
+  # mode: single - a second command while one runs is rejected.
+  - id: run_command
     mode: single
     parameters:
-      park: bool
+      name: string
+      steps: string
     then:
       - lambda: |-
-          id(tc_park) = park;
-          if (park) {
-            id(timer_parked) = true;
-            id(restore_due) = false;
-            id(tc_seq) = aux1::wrap_sequence("${timer_park}");
-            ESP_LOGI("timer", "Timer control: PARK - all work days off");
-            aux1::pub(id(automower_timer_control), "parking...");
-          } else {
-            id(restore_attempts) += 1;
-            id(tc_seq) = aux1::wrap_sequence("${timer_normal}");
-            ESP_LOGI("timer", "Timer control: RESTORE normal timer (attempt %d)", id(restore_attempts));
-            char b[48];
-            snprintf(b, sizeof(b), "restoring (attempt %d)...", id(restore_attempts));
-            aux1::pub(id(automower_timer_control), b);
-          }
-      - wait_until:
-          condition:
-            lambda: "return !id(key_sequence).is_running();"
-          timeout: 120s
-      - script.execute:
-          id: key_sequence
-          seq: !lambda "return id(tc_seq);"
-      - script.wait: key_sequence
-      - lambda: |-
-          id(tc_try) = 0;
-          id(tc_done) = false;
+          id(cmd_name) = name;
+          id(cmd_steps) = steps;
+          id(cmd_ok) = true;
+          id(cmd_log) = "";
+          ESP_LOGI("cmd", "Command '%s': %s", name.c_str(), steps.c_str());
+          aux1::pub(id(automower_command), name + ": running...");
       - while:
           condition:
-            lambda: "return !id(tc_done);"
+            lambda: "return id(cmd_ok) && !aux1::trim(id(cmd_steps)).empty();"
           then:
-            - delay: !lambda "return id(tc_try) == 0 ? 2000 : 6000;"
             - lambda: |-
-                bool last = id(tc_try) >= 1;
-                id(tc_try) += 1;
-                auto l = aux1::read_long_status(id(aux1_uart), id(automower_pin_global));
-                if (l.ok) {
-                  if (l.next_set) aux1::pub(id(automower_next_start), aux1::fmt_mower_time(l.next));
-                  else aux1::pub(id(automower_next_start), aux1::timer_bits(l) == 1 ? "now (in work period)" : "none");
-                }
-                uint8_t tb = l.ok ? aux1::timer_bits(l) : 0xFF;
-                // With HOME selected the timer never shows "waiting" (bits read 0
-                // outside a work period) and Next Start is only shown for a few
-                // seconds after the lid closes (9 Oct), so a restore counts as
-                // confirmed once a next start is shown.
-                bool home = l.ok && aux1::mode_bits(l) == 0x20;
-                bool ok = park ? (l.ok && tb == 0x02)
-                               : (l.ok && (tb == 0x01 || l.next_set));
-                if (!ok && !last) {
-                  ESP_LOGI("timer", "Timer control: %s not confirmed on first read (timer bits 0x%02X) - re-reading",
-                           park ? "park" : "restore", tb);
+                std::string &s = id(cmd_steps);
+                size_t c = s.find(';');
+                std::string step = aux1::trim(c == std::string::npos ? s : s.substr(0, c));
+                s = c == std::string::npos ? std::string() : s.substr(c + 1);
+                size_t g = step.find('>');
+                id(cmd_keys) = aux1::trim(g == std::string::npos ? step : step.substr(0, g));
+                id(cmd_expect) = g == std::string::npos ? std::string() : aux1::trim(step.substr(g + 1));
+                for (auto &ch : id(cmd_expect)) ch = tolower((unsigned char) ch);
+                id(cmd_play) = !id(cmd_keys).empty();
+                if (step.empty()) return;
+                if (!id(cmd_log).empty()) id(cmd_log) += "; ";
+                id(cmd_log) += step;
+                aux1::LongStatus l;
+                if (aux1::ready()) l = aux1::read_long_status(id(aux1_uart), id(automower_pin_global));
+                int pre = aux1::check_expect(id(cmd_expect), l, id(docked_known));
+                if (pre < 0) {
+                  ESP_LOGW("cmd", "Unknown expected state '%s'", id(cmd_expect).c_str());
+                  id(cmd_log) += " - unknown state";
+                  id(cmd_ok) = false;
+                  id(cmd_play) = false;
                   return;
                 }
-                id(tc_done) = true;
-                if (park) {
-                  char b[96];
-                  if (ok) {
-                    snprintf(b, sizeof(b), "parked - %s", id(timer_auto_restore).state ? "auto restore ${timer_restore_hour}:${timer_restore_minute}" : "restore manually");
-                    ESP_LOGI("timer", "Timer control: parked OK (timer waiting)");
-                  } else if (home) {
-                    snprintf(b, sizeof(b), "park sent - HOME selected, can't be verified");
-                    ESP_LOGI("timer", "Timer control: park sent; HOME selected, so the timer state can't be read");
-                  } else {
-                    snprintf(b, sizeof(b), "park NOT confirmed (timer bits %02X) - check mower", tb);
-                    ESP_LOGW("timer", "Timer control: park not confirmed (timer bits 0x%02X)", tb);
-                  }
-                  aux1::pub(id(automower_timer_control), b);
-                } else if (ok) {
-                  id(timer_parked) = false;
-                  id(restore_due) = false;
-                  id(restore_attempts) = 0;
-                  std::string ns = l.next_set ? aux1::fmt_mower_time(l.next) : std::string("now");
-                  ESP_LOGI("timer", "Timer control: normal timer restored, next start %s%s", ns.c_str(),
-                           home ? " (HOME selected - won't start until AUTO)" : "");
-                  aux1::pub(id(automower_timer_control), "normal timer (next start " + ns + ")" +
-                                                             (home ? std::string(" - HOME selected") : std::string("")));
-                } else {
-                  ESP_LOGW("timer", "Timer control: restore not confirmed (read %s, timer bits 0x%02X) - retry in 10 min",
-                           l.ok ? "ok" : "failed", tb);
-                  char b[64];
-                  snprintf(b, sizeof(b), "restore attempt %d not confirmed - retrying", id(restore_attempts));
-                  aux1::pub(id(automower_timer_control), b);
+                // Mower asleep: only "docked" can be judged (last known).
+                if (!l.ok && id(cmd_expect) == "docked" && id(docked_known)) pre = 1;
+                bool checked = !id(cmd_expect).empty() && id(cmd_expect) != "any";
+                if (checked && pre == 1) {
+                  ESP_LOGI("cmd", "Step '%s': already %s - keys skipped", step.c_str(), id(cmd_expect).c_str());
+                  id(cmd_log) += " skipped (already)";
+                  id(cmd_play) = false;
+                } else if (id(cmd_play)) {
+                  ESP_LOGI("cmd", "Step '%s': playing %s (status %s)", step.c_str(), id(cmd_keys).c_str(),
+                           l.ok ? aux1::hex_dump(l.st, 6).c_str() : "asleep");
                 }
-
-  # Mode Home / Auto / Man buttons. A deliberate mode choice cancels a pending
-  # Skip Today, so 23:00 never undoes it. Ignored (and the skip kept) if a
-  # sequence is already playing, since key_sequence would reject it anyway.
-  - id: mode_button
-    mode: single
-    parameters:
-      seq: string
-    then:
-      - if:
-          condition:
-            lambda: "return id(key_sequence).is_running() || id(skip_today).is_running() || id(skip_rearm).is_running();"
-          then:
-            - logger.log: {format: "Mode button: busy - ignored", level: WARN, tag: keypad}
-          else:
-            - lambda: |-
-                if (id(skip_pending)) {
-                  id(skip_pending) = false;
-                  id(skip_due) = false;
-                  ESP_LOGI("skip", "Skip Today cancelled by a mode button");
-                }
-                aux1::pub(id(automower_skip), "off");
-            - script.execute:
-                id: key_sequence
-                seq: !lambda "return seq;"
-
-  # Skip Today, part 1: HOME now and remember to switch back. Checked from the
-  # long 0x12 frame 2s after the lid closes (HOME = mode bits 0x20).
-  - id: skip_today
-    mode: single
-    then:
-      - lambda: |-
-          id(skip_pending) = true;
-          id(skip_due) = false;
-          id(skip_attempts) = 0;
-          auto t = id(sntp_time).now();
-          bool late = t.is_valid() && t.hour * 60 + t.minute >= atoi("${skip_rearm_hour}") * 60 + atoi("${skip_rearm_minute}");
-          ESP_LOGI("skip", "Skip Today: HOME now, back to AUTO %s at ${skip_rearm_hour}:${skip_rearm_minute}", late ? "tomorrow" : "tonight");
-          aux1::pub(id(automower_skip), "setting HOME...");
-      - script.execute: {id: key_sequence, seq: "[rmh1s]"}
-      - script.wait: key_sequence
-      - delay: 2s
-      - lambda: |-
-          auto l = aux1::read_long_status(id(aux1_uart), id(automower_pin_global));
-          auto t = id(sntp_time).now();
-          bool late = t.is_valid() && t.hour * 60 + t.minute >= atoi("${skip_rearm_hour}") * 60 + atoi("${skip_rearm_minute}");
-          std::string when = std::string(late ? "tomorrow " : "") + "${skip_rearm_hour}:${skip_rearm_minute}";
-          if (l.ok && aux1::mode_bits(l) == 0x20) {
-            ESP_LOGI("skip", "Skip Today: HOME confirmed (status %s)", aux1::hex_dump(l.st, 6).c_str());
-            aux1::pub(id(automower_skip), "skipping - back to AUTO " + when);
-          } else {
-            // Kept pending either way: switching back to AUTO later is harmless.
-            ESP_LOGW("skip", "Skip Today: HOME NOT confirmed (%s) - check the mower",
-                     l.ok ? aux1::hex_dump(l.st, 6).c_str() : "no reply");
-            aux1::pub(id(automower_skip), "HOME NOT confirmed - check mower (AUTO " + when + ")");
-          }
-
-  # Skip Today, part 2 (at ${skip_rearm_hour}:${skip_rearm_minute}, then every 10 min until confirmed,
-  # max 6): [rmh2s] and check AUTO (mode bits 0x00). Only while docked: if the
-  # mower is awake and not on the charger (fault, out on the lawn), it waits
-  # for the next retry. In AUTO outside the work hours it stays on the
-  # charger (and stays awake ~25 min, so it charges too).
-  - id: skip_rearm
-    mode: single
-    then:
-      - wait_until:
-          condition:
-            lambda: "return !id(key_sequence).is_running() && !id(timer_apply).is_running() && !id(self_test).is_running() && !id(nightly_topup).is_running();"
-          timeout: 300s
-      - lambda: |-
-          id(skip_attempts) += 1;
-          uint8_t s = id(last_state_code);
-          id(sk_go) = !id(key_sequence).is_running() &&
-                      (!id(automower_aux1_awake).state || s == 0x01 || s == 0x04 || s == 0x00);
-          if (id(sk_go)) {
-            ESP_LOGI("skip", "Skip Today: back to AUTO (attempt %d)", id(skip_attempts));
-            char b[48];
-            snprintf(b, sizeof(b), "back to AUTO (attempt %d)...", id(skip_attempts));
-            aux1::pub(id(automower_skip), b);
-          } else {
-            ESP_LOGW("skip", "Skip Today: not docked or busy (state %02X) - retry in 10 min (attempt %d)", s,
-                     id(skip_attempts));
-            aux1::pub(id(automower_skip), "waiting for the mower to dock - retrying");
-          }
-      - if:
-          condition:
-            lambda: "return id(sk_go);"
-          then:
-            - script.execute: {id: key_sequence, seq: "[rmh2s]"}
-            - script.wait: key_sequence
-            - lambda: |-
-                id(sk_try) = 0;
-                id(sk_done) = false;
-            - while:
+            - if:
                 condition:
-                  lambda: "return !id(sk_done);"
+                  lambda: "return id(cmd_play);"
                 then:
-                  - delay: !lambda "return id(sk_try) == 0 ? 2000 : 6000;"
+                  - wait_until:
+                      condition:
+                        lambda: "return !id(key_sequence).is_running();"
+                      timeout: 120s
+                  - script.execute:
+                      id: key_sequence
+                      seq: !lambda "return aux1::wrap_sequence(id(cmd_keys));"
+                  - script.wait: key_sequence
+                  - if:
+                      condition:
+                        lambda: 'return id(cmd_expect) == "docked";'
+                      then:
+                        - logger.log: {format: "Waiting for the mower to dock (max 90 min)", tag: cmd}
+                        - wait_until:
+                            condition:
+                              lambda: "uint8_t s = id(last_state_code); return id(docked_known) && s != 0x02 && s != 0x03 && s != 0x05;"
+                            timeout: 90min
+                        - lambda: |-
+                            uint8_t s = id(last_state_code);
+                            bool ok = id(docked_known) && s != 0x02 && s != 0x03 && s != 0x05;
+                            id(cmd_log) += ok ? " ok" : " FAILED (not docked after 90 min)";
+                            if (!ok) id(cmd_ok) = false;
+                      else:
+                        - delay: 2s
+                        - lambda: |-
+                            auto l = aux1::read_long_status(id(aux1_uart), id(automower_pin_global));
+                            bool ok = aux1::check_expect(id(cmd_expect), l, id(docked_known)) == 1;
+                            id(cmd_recheck) = !ok;
+                            if (ok) id(cmd_log) += " ok";
+                            else ESP_LOGI("cmd", "Not %s on the first read (status %s) - re-reading", id(cmd_expect).c_str(),
+                                          l.ok ? aux1::hex_dump(l.st, 6).c_str() : "no reply");
+                        - if:
+                            condition:
+                              lambda: "return id(cmd_recheck);"
+                            then:
+                              - delay: 6s
+                              - lambda: |-
+                                  auto l = aux1::read_long_status(id(aux1_uart), id(automower_pin_global));
+                                  bool ok = aux1::check_expect(id(cmd_expect), l, id(docked_known)) == 1;
+                                  if (ok) id(cmd_log) += " ok";
+                                  else {
+                                    id(cmd_log) += " FAILED (status " + (l.ok ? aux1::hex_dump(l.st, 6) : std::string("no reply")) + ")";
+                                    id(cmd_ok) = false;
+                                  }
                   - lambda: |-
-                      bool last = id(sk_try) >= 1;
-                      id(sk_try) += 1;
-                      auto l = aux1::read_long_status(id(aux1_uart), id(automower_pin_global));
-                      if (l.ok) {
-                        if (l.next_set) aux1::pub(id(automower_next_start), aux1::fmt_mower_time(l.next));
-                        else aux1::pub(id(automower_next_start), aux1::timer_bits(l) == 1 ? "now (in work period)" : "none");
+                      if (id(seq_aborted)) {
+                        id(cmd_log) += " (keys aborted: mower asleep)";
+                        id(cmd_ok) = false;
                       }
-                      bool ok = l.ok && aux1::mode_bits(l) == 0x00;
-                      if (!ok && !last) {
-                        ESP_LOGI("skip", "Skip Today: AUTO not confirmed on first read - re-reading");
-                        return;
-                      }
-                      id(sk_done) = true;
-                      if (ok) {
-                        id(skip_pending) = false;
-                        id(skip_due) = false;
-                        auto t = id(sntp_time).now();
-                        std::string ns = l.next_set ? aux1::fmt_mower_time(l.next) : std::string("now (in work period)");
-                        ESP_LOGI("skip", "Skip Today: back in AUTO, next start %s", ns.c_str());
-                        aux1::pub(id(automower_skip), "off - back to AUTO " +
-                                                          (t.is_valid() ? t.strftime("%a %H:%M") : std::string("")) +
-                                                          ", next start " + ns);
-                      } else {
-                        ESP_LOGW("skip", "Skip Today: AUTO not confirmed (%s) - retry in 10 min",
-                                 l.ok ? aux1::hex_dump(l.st, 6).c_str() : "no reply");
-                        char b[64];
-                        snprintf(b, sizeof(b), "back to AUTO attempt %d not confirmed - retrying", id(skip_attempts));
-                        aux1::pub(id(automower_skip), b);
-                      }
-
-  # Keypad self test (docked only). Four wrapped sequences, each checked from
-  # the long 0x12 frame:
-  #   1 [rmh1s]               -> HOME selected, mower docked
-  #   2 WH1 = now-1h..now+1h, all days on -> timer "in work period" (stays
-  #     docked because HOME is selected)
-  #   3 timer_normal          -> timer active again (same state as before the test)
-  #   4 [rmh2s]               -> AUTO selected
-  # Proves keys, hatch, commit and timer logic; cannot check exact times (the
-  # schedule itself isn't readable). On failure it stops; if the timer may
-  # have been left changed, the normal timer is restored via timer control.
-  # NB: with HOME selected the mower sleeps ~16s after each hatch close, so
-  # steps 2-4 usually start with a wake; the key engine replays a sequence
-  # once if the mower drops out mid-way.
-  - id: self_test
-    mode: single
-    then:
-      - lambda: |-
-          id(st_ok) = true;
-          id(st_step) = 0;
-          id(st_report) = "";
-          id(st_prev_timer) = 0xFF;
-          if (id(timer_parked)) {
-            id(st_ok) = false;
-            id(st_report) = "refused: timer is parked - Restore Timer first";
-          } else if (aux1::ready()) {
-            auto l = aux1::read_long_status(id(aux1_uart), id(automower_pin_global));
-            if (l.ok && l.st[0] != 0x01 && l.st[0] != 0x04) {
-              id(st_ok) = false;
-              char b[64];
-              snprintf(b, sizeof(b), "refused: mower not docked (state %02X)", l.st[0]);
-              id(st_report) = b;
-            } else if (l.ok) {
-              id(st_prev_timer) = aux1::timer_bits(l);
-            }
-          }
-          ESP_LOGI("selftest", "Self test %s", id(st_ok) ? "starting" : id(st_report).c_str());
-          aux1::pub(id(automower_self_test), id(st_ok) ? "running..." : id(st_report));
-      - while:
-          condition:
-            lambda: "return id(st_ok) && id(st_step) < 4;"
-          then:
-            - lambda: |-
-                switch (id(st_step)) {
-                  case 0: id(st_seq) = "[rmh1s]"; break;
-                  case 1: {
-                    auto t = id(sntp_time).now();
-                    int now_m = t.is_valid() ? t.hour * 60 + t.minute : 12 * 60;
-                    int a = std::max(0, now_m - 60), b = std::min(23 * 60 + 59, now_m + 60);
-                    char w[48];
-                    snprintf(w, sizeof(w), "m11%02d%02d%02d%02do r m138b", a / 60, a % 60, b / 60, b % 60);
-                    id(st_seq) = aux1::wrap_sequence(w);
-                    break;
-                  }
-                  case 2: id(st_seq) = aux1::wrap_sequence("${timer_normal}"); break;
-                  default: id(st_seq) = "[rmh2s]"; break;
-                }
-                ESP_LOGI("selftest", "Step %d: %s", id(st_step) + 1, id(st_seq).c_str());
-            - wait_until:
-                condition:
-                  lambda: "return !id(key_sequence).is_running();"
-                timeout: 120s
-            - script.execute:
-                id: key_sequence
-                seq: !lambda "return id(st_seq);"
-            - script.wait: key_sequence
-            - delay: 2s
-            - lambda: |-
-                auto l = aux1::read_long_status(id(aux1_uart), id(automower_pin_global));
-                bool ok = false;
-                char b[80];
-                uint8_t tb = l.ok ? aux1::timer_bits(l) : 0xFF;
-                switch (id(st_step)) {
-                  case 0:
-                    ok = l.ok && aux1::mode_bits(l) == 0x20 && (l.st[0] == 0x01 || l.st[0] == 0x04);
-                    snprintf(b, sizeof(b), "1 HOME %s", ok ? "ok" : "FAIL");
-                    break;
-                  case 1:
-                    ok = l.ok && tb == 0x01;
-                    snprintf(b, sizeof(b), "2 window %s", ok ? "ok" : "FAIL");
-                    break;
-                  case 2:
-                    ok = l.ok && (tb == 0x01 || (tb == 0x02 && l.next_set)) &&
-                         (id(st_prev_timer) == 0xFF || tb == id(st_prev_timer));
-                    snprintf(b, sizeof(b), "3 restore %s (next %s)", ok ? "ok" : "FAIL",
-                             l.next_set ? aux1::fmt_mower_time(l.next).c_str() : "now");
-                    break;
-                  default:
-                    ok = l.ok && aux1::mode_bits(l) == 0x00;
-                    snprintf(b, sizeof(b), "4 AUTO %s", ok ? "ok" : "FAIL");
-                    break;
-                }
-                if (!l.ok) strncat(b, " (no reply)", sizeof(b) - strlen(b) - 1);
-                if (id(seq_aborted)) strncat(b, " (keys aborted: mower asleep)", sizeof(b) - strlen(b) - 1);
-                ESP_LOGI("selftest", "%s (status %s)", b, l.ok ? aux1::hex_dump(l.st, 6).c_str() : "-");
-                if (!id(st_report).empty()) id(st_report) += ", ";
-                id(st_report) += b;
-                if (!ok) id(st_ok) = false;
-                if (l.ok) {
-                  if (l.next_set) aux1::pub(id(automower_next_start), aux1::fmt_mower_time(l.next));
-                  else aux1::pub(id(automower_next_start), tb == 1 ? "now (in work period)" : "none");
-                }
-                id(st_step) += 1;
       - lambda: |-
           auto t = id(sntp_time).now();
           std::string when = t.is_valid() ? t.strftime("%a %H:%M") : std::string("?");
-          bool pass = id(st_ok) && id(st_step) >= 4;
-          // Timer touched but not confirmed restored (failed in step 2 or 3): hand
-          // the restore to timer control, which retries every 10 min.
-          bool restore = !id(st_ok) && (id(st_step) == 2 || id(st_step) == 3);
-          std::string res = std::string(pass ? "PASS " : "FAIL ") + when + ": " + id(st_report);
-          if (!pass && id(st_step) >= 1) res += " - HOME left selected";
-          if (restore) {
-            id(timer_parked) = true;
-            id(restore_due) = true;
-            id(restore_attempts) = 0;
-            res += "; restoring normal timer";
-          }
-          ESP_LOGI("selftest", "%s", res.c_str());
-          aux1::pub(id(automower_self_test), res);
-      - if:
-          condition:
-            lambda: "return id(restore_due) && id(timer_parked) && !id(st_ok);"
-          then:
-            - script.execute: {id: timer_apply, park: false}
+          std::string res = when + " " + id(cmd_name) + (id(cmd_ok) ? " OK: " : " FAILED: ") + id(cmd_log);
+          if (id(cmd_ok)) ESP_LOGI("cmd", "%s", res.c_str());
+          else ESP_LOGW("cmd", "%s", res.c_str());
+          aux1::pub(id(automower_command), res);
 
   # Plays a key sequence (see language above). mode: single - a second
   # request while one is playing is rejected with a log warning.

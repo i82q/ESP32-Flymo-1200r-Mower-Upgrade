@@ -349,6 +349,35 @@ inline std::string fmt_mower_time(uint32_t t) {
 // "[r" + seq + "rs]" = lid open (wakes it), Home hold (screen on, home
 // screen), the settings, Home hold, Start, lid closed. Sequences already
 // starting with '[' are left alone; a leading '!' sends the rest raw.
+inline std::string trim(const std::string &s) {
+  size_t a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
+  return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
+}
+
+// On the charger: state 04 (charging), b1 bit3, or 01 (charged) when it was
+// last seen docked - 0x12 "01 00" alone can't tell docked from stopped on
+// the lawn (4 Nov).
+inline bool is_docked(const LongStatus &l, bool docked_known) {
+  return l.st[0] == 0x04 || (l.st[1] & 0x08) || (l.st[0] == 0x01 && docked_known);
+}
+
+// Expected-state check for run_command (see cmd_park in automower.yaml).
+// Returns 1 = met, 0 = not met, -1 = unknown name. "" / "any" = always met.
+inline int check_expect(const std::string &e, const LongStatus &l, bool docked_known) {
+  if (e.empty() || e == "any") return 1;
+  if (!l.ok) {
+    if (e == "docked" || e == "auto_stopped" || e == "auto_armed" || e == "home" || e == "man") return 0;
+    return -1;
+  }
+  uint8_t mode = mode_bits(l);
+  if (e == "docked") return is_docked(l, docked_known) ? 1 : 0;
+  if (e == "auto_stopped") return (mode == 0x00 && l.st[2] == 0x05) ? 1 : 0;
+  if (e == "auto_armed") return (mode == 0x00 && (l.st[2] == 0x06 || l.st[0] == 0x02 || l.st[0] == 0x05)) ? 1 : 0;
+  if (e == "home") return mode == 0x20 ? 1 : 0;
+  if (e == "man") return mode == 0x10 ? 1 : 0;
+  return -1;
+}
+
 inline std::string wrap_sequence(const std::string &in) {
   std::string s;
   for (char c : in) if (c != ' ') s += c;

@@ -105,21 +105,49 @@ Used by the **Keypad Menu Path** text entity + **Send Keypad Menu Path** button,
 
 The same timing applies to single-key buttons, so each press ties up the keypad for ~1.25s.
 
-## Home Assistant controls
-- **Mode buttons:** `Automower Mode Home` / `Mode Auto` / `Mode Man` play `[rmh1s]` / `[rmh2s]` / `[rmh3s]`. Mode Home is sticky: the mower stays home until Auto or Man is chosen. Since 10 Oct any mode button also cancels a pending Skip Today.
-- **Automower Skip Today** (10 Oct): HOME now, back to AUTO at 23:00. See the Skip Today section below; the state is in **Automower Skip**.
-- **Timer control and self test:** see the sections below (Park, Restore Timer, Timer Auto Restore, Keypad Self Test, and the Timer Control / Self Test / Next Start sensors).
-- **Top-up:** `Automower Top-up Now` button and `Nightly Top-up` switch (02:00, off by default); result in **Automower Top-up** (firmware 5 Oct).
-- **Automower Hatch** (switch): on = hatch held open, off = closed (commits). No auto-close; left open, the mower just stays stopped. An ESP32 reset while open drops the relay, which closes the hatch and commits the screen.
-- **Keys:** Keypad Digit 0–9, Start, Home, Next, Back, OK, Return and Expert Mode are momentary buttons; each plays a one-character sequence.
-- **AUX1 Polling** (switch): master on/off for all AUX1 serial traffic (not the relays). Turns off automatically on Tools/EXP entry; turn it back on after leaving that menu (7+9 again, or a power cycle). It also blocks raw queries.
-- **AUX1 mode:** `Automower AUX1 Stop` and `Automower AUX1 Home` buttons, plus the MQTT topic `automower/cmd` (stop/start/home/manual/auto/search). 9 Oct: AUX1 Home (0x0E 02) appeared to send the mower home on its own, before any keys were pressed — to be confirmed (test A2).
-- **Automower Sync Time:** wakes the mower if needed, then writes the SNTP time and date to it.
-- **Automower Raw Query** + **Send Raw Query:** send hex bytes; the reply appears in **Automower Raw Response**.
-- **Removed:** Stop Loop Pulse (replaced by the Hatch switch), Send Home and the untested Start Auto (replaced by the mode buttons), the old `Automower Command` select.
-- **MQTT:** discovery off and `topic_prefix: null`, so no per-entity state topics; HA uses the native API. MQTT carries only `automower/status` (LWT), `automower/debug` (log stream with every AUX1 frame, used for capture logging) and the two command topics.
+## Home Assistant controls (firmware 17 Nov)
+- **Automower Mowing** (switch): **off = park, on = mow.** Plays the `park` / `mow` commands below; the timer is never touched. The setting is kept in flash but not replayed at boot. Result in **Automower Command**.
+- **Automower Top-up Now** (button) and **Nightly Top-up** (switch, 02:00): wake the mower (lid open/close, no Start) and report the charge current in **Automower Top-up**; the clock is synced if it is more than 30 s out. Parked (AUTO, waiting for Start), each wake charges it to full. Since 17 Nov it no longer skips "not docked" after an ESP restart (uses the last known docked state).
+- **Keypad Menu Path** + **Send Keypad Menu Path**: runs any command text (see "Commands" below), e.g. `[rmh2]>auto_stopped`. MQTT `automower/keys` does the same.
+- **Automower Hatch** (switch, configuration section): on = hatch held open, off = closed (commits). For testing.
+- **AUX1 Polling** (switch, configuration): master on/off for AUX1 serial traffic. Turns off automatically on Tools/EXP entry; turn it back on after leaving that menu.
+- **Automower Raw Query** + **Send Raw Query** (diagnostic): hex bytes, reply in **Automower Raw Response**.
+- **MQTT:** discovery off and `topic_prefix: null`; HA uses the native API. MQTT carries `automower/status` (LWT), `automower/debug` (log stream, used for capture logging), `automower/keys` (commands) and `automower/cmd` (AUX1 0x0E stop/start/home/manual/auto/search, no button).
+- **Removed 17 Nov:** Mode Home / Auto / Man, Park (timer off), Restore Timer, Timer Auto Restore, Skip Today, Keypad Self Test, Sync Time, AUX1 Stop / Home buttons, the 17 single-key buttons, the Timer Control / Skip / Self Test text sensors and the Status Byte3 / Byte4 sensors. The sections below on Skip Today, Timer control and the self test are kept for their findings.
+
+## Commands (firmware 17 Nov)
+One routine, `run_command`, plays a command: steps separated by `;`, each `keys>expected`. Keys are in the key sequence language above (wrapped as `[r ... r s]` unless they start with `[` or `!`).
+- **Before each step** it reads 0x12. If the mower is already in the expected state, the keys are skipped.
+- **After the keys** it checks the state: `docked` waits up to 90 min; the others read 2 s after the lid closes and again 6 s later.
+- It stops at the first failed step. Result in **Automower Command** and the log (`[I][cmd]`).
+
+| Expected | Meaning (0x12) |
+|---|---|
+| `docked` | on the charger: state `04`, or b1 bit3, or `01` when it was last seen docked (`01 00` alone can't tell docked from stopped on the lawn) |
+| `auto_stopped` | AUTO selected (b3 & 0x30 = `00`), b2 `05` — waiting for Start |
+| `auto_armed` | AUTO selected and b2 `06`, or leaving / mowing |
+| `home` / `man` | that mode selected |
+| *(none)* | no check |
+
+Commands in the substitutions:
+- `cmd_park: "[rmh1s]>docked; [rmh2]>auto_stopped"` — HOME + Start sends it home (skipped if already docked), then AUTO selected and the lid closed **without** Start.
+- `cmd_mow: "[rmh2s]>auto_armed"` — AUTO + Start; the timer decides when it goes out.
+
+A new command is a new string (plus a button or switch that plays it). To bring single keys back for testing, paste into `button:`:
+```yaml
+  - {platform: template, name: "Keypad Digit 0", on_press: [{script.execute: {id: key_sequence, seq: "0"}}]}
+  # ... digits 1-9 the same ...
+  - {platform: template, name: "Keypad Start",   on_press: [{script.execute: {id: key_sequence, seq: "s"}}]}
+  - {platform: template, name: "Keypad Home",    on_press: [{script.execute: {id: key_sequence, seq: "h"}}]}
+  - {platform: template, name: "Keypad Next",    on_press: [{script.execute: {id: key_sequence, seq: "m"}}]}
+  - {platform: template, name: "Keypad Back",    on_press: [{script.execute: {id: key_sequence, seq: "b"}}]}
+  - {platform: template, name: "Keypad OK",      on_press: [{script.execute: {id: key_sequence, seq: "o"}}]}
+  - {platform: template, name: "Keypad Return",  on_press: [{script.execute: {id: key_sequence, seq: "r"}}]}
+```
+(Or type `!0`, `!s` etc. into Keypad Menu Path: `!` plays the keys raw, unwrapped.)
 
 ## Skip Today (firmware 10 Oct)
+_Removed from the firmware 17 Nov; kept for the findings._
 For "not today" (rain, people on the lawn) without touching the timer. Meant to replace Park / Restore Timer for day-to-day use.
 
 | Step | What the ESP does | Automower Skip shows |
@@ -135,6 +163,7 @@ For "not today" (rain, people on the lawn) without touching the timer. Meant to 
 - **Untested as of 10 Oct.** First test: press Skip Today while docked → `skipping…` and Automower Mode HOME; at 23:00 → Mode AUTO and a next start in Automower Skip.
 
 ## Timer control (firmware 2 Oct) — why the mower's timer may change by itself
+_Removed from the firmware 17 Nov; kept for the findings._
 **Background.** Clearing the active work window sends the mower straight home in AUTO, and AUTO stays selected (proven 2 Oct 19:17: `03 00 06 02` at once, docked 3 min later). That is cleaner than Mode Home, which leaves HOME selected until AUTO is chosen again. The catch is the timer must be put back afterwards, so the ESP does that.
 
 **What the ESP does, and when:**
@@ -152,6 +181,7 @@ For "not today" (rain, people on the lawn) without touching the timer. Meant to 
 - **Park does not park — answered 7 Nov.** Work days all off is read by the mower as "no restriction" (timer bits `0`, Next Start 0), the same as a cleared timer. After the 6 Nov park, AUTO was selected by hand on 7 Nov and the mower went out every time it was charged, including at 17:58 in the dark. **Don't use Park with AUTO selected; retire it** (or rebuild parking on the 17 Oct no_mow design: AUTO selected, stopped, no Start). The both-windows-off alternative (`m1100000000o r m1200000000o`) would very likely do the same.
 
 ## Keypad self test (firmware 2 Oct)
+_Removed from the firmware 17 Nov; kept for the findings._
 **Automower Keypad Self Test** button, docked only (refused if the mower is out, or the timer is parked). It plays four wrapped sequences and checks each from the long 0x12 frame:
 1. `[rmh1s]` → HOME selected, mower docked.
 2. Work hours 1 = now −1h … now +1h, all days on → timer "in work period". It stays docked because HOME is selected.
