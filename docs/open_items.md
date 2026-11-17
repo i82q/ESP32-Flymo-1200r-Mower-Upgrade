@@ -73,7 +73,7 @@ The design:
 ## Built 17 Nov, to test (branch `park-switch-and-tidy`)
 Not compiled here (no PlatformIO access): `esphome config` passes, all lambdas compile on the host against stub ESPHome types, and the state decoder was checked against real 0x12 frames.
 - **`run_command`**: plays `keys>expected; ...` steps, skipping a step whose state is already met, checking each result from 0x12 — see keypad_and_menus.md "Commands". Keypad Menu Path and MQTT `automower/keys` use it too.
-- **Automower Mowing** switch: off = `cmd_park` (`[rmh1s]>docked; [rmh2]>auto_stopped`), on = `cmd_mow` (`[rmh2s]>auto_armed`). Timer untouched.
+- **Automower Park-Mow** switch: off = `cmd_park` (`[rmh1s]>docked; [rmh2]>auto_stopped`), on = `cmd_mow` (`[rmh2s]>auto_armed`). Timer untouched.
 - Nightly top-up no longer skips "not docked" after an ESP restart (`docked_known`, kept in flash).
 - Removed: see keypad_and_menus.md "Home Assistant controls". The old `mowing-switch-and-mailbox` branch is superseded (GitHub refused the delete from here — delete it by hand).
 

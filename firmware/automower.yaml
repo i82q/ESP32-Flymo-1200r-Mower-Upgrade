@@ -23,7 +23,7 @@
 #     from AUX1 0x12 ("keys>expected; ..."). Commands are strings in the
 #     substitutions (cmd_park, cmd_mow); Keypad Menu Path and MQTT
 #     automower/keys use the same routine.
-#   - "Automower Mowing" switch: OFF = park (HOME + Start to send it home if
+#   - "Automower Park-Mow" switch: OFF = park (HOME + Start to send it home if
 #     it isn't docked, then AUTO with the lid closed WITHOUT Start - docked,
 #     waiting for Start; every wake charges it to full). ON = mow (AUTO +
 #     Start). The timer is never touched. Result in "Automower Command".
@@ -975,7 +975,7 @@ switch:
   # wake - the lambda just shows pm_mow.
   - platform: template
     id: automower_mowing
-    name: "Automower Mowing"
+    name: "Automower Park-Mow"   # on = mow, off = park
     icon: mdi:robot-mower
     lambda: "return id(pm_mow);"
     restore_mode: DISABLED
@@ -1056,6 +1056,11 @@ button:
             std::string s = aux1::trim(id(keypad_menu_path).state);
             if (!s.empty() && isdigit((unsigned char) s[0])) s = "m" + s;
             return s;
+      # Clear the box once sent (the text is already captured above), so a
+      # second press can't resend it by accident.
+      - text.set:
+          id: keypad_menu_path
+          value: ""
 
   # Top-up now: the same as the nightly run, but without the pack-full skip.
   # Use it docked, with the mower in standby (for the first test: after 15:30).

@@ -106,9 +106,9 @@ Used by the **Keypad Menu Path** text entity + **Send Keypad Menu Path** button,
 The same timing applies to single-key buttons, so each press ties up the keypad for ~1.25s.
 
 ## Home Assistant controls (firmware 17 Nov)
-- **Automower Mowing** (switch): **off = park, on = mow.** Plays the `park` / `mow` commands below; the timer is never touched. The setting is kept in flash but not replayed at boot. Result in **Automower Command**.
+- **Automower Park-Mow** (switch): **off = park, on = mow.** Plays the `park` / `mow` commands below; the timer is never touched. The setting is kept in flash but not replayed at boot. Result in **Automower Command**.
 - **Automower Top-up Now** (button) and **Nightly Top-up** (switch, 02:00): wake the mower (lid open/close, no Start) and report the charge current in **Automower Top-up**; the clock is synced if it is more than 30 s out. Parked (AUTO, waiting for Start), each wake charges it to full. Since 17 Nov it no longer skips "not docked" after an ESP restart (uses the last known docked state).
-- **Keypad Menu Path** + **Send Keypad Menu Path**: runs any command text (see "Commands" below), e.g. `[rmh2]>auto_stopped`. MQTT `automower/keys` does the same.
+- **Keypad Menu Path** + **Send Keypad Menu Path**: runs any command text (see "Commands" below), e.g. `[rmh2]>auto_stopped`. MQTT `automower/keys` does the same. The box is cleared once sent, so a second press can't resend it.
 - **Automower Hatch** (switch, configuration section): on = hatch held open, off = closed (commits). For testing.
 - **AUX1 Polling** (switch, configuration): master on/off for AUX1 serial traffic. Turns off automatically on Tools/EXP entry; turn it back on after leaving that menu.
 - **Automower Raw Query** + **Send Raw Query** (diagnostic): hex bytes, reply in **Automower Raw Response**.
