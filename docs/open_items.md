@@ -68,7 +68,7 @@ The design:
   - Could replace HOME / Park / Skip Today for day-to-day use, and is what the rain automation would toggle.
 - [ ] **`automower/queue` retained command mailbox:** HA posts a command (key sequence, `sync_time`, timer string…); on the next wake with AUX1 ready and the mower docked, the ESP runs it, publishes the outcome to `automower/queue_result`, then clears the retained message. Failed → keep it and retry next wake. Whitelist command types; never act while the mower is moving.
 - [x] **Top-up after a restart** — fixed 17 Nov (`docked_known`). The no_mow flag / mailbox were dropped in favour of the Mowing switch + `run_command` (17 Nov).
-- [ ] **ESP sleeps with the mower** (wake on AUX1 via GPIO4 or every 15–30 min to check MQTT) — cuts the ~0.6 Ah/night drain; pairs naturally with the retained flag and mailbox.
+- [x] **ESP sleeps with the mower — decided against (17 Nov):** HA would lose control whenever both sleep. The ESP only deep-sleeps below 17.5 V with the mower asleep; Nightly Top-up covers the ~90 mA drain while parked.
 
 ## Built 17 Nov, to test (branch `park-switch-and-tidy`)
 Not compiled here (no PlatformIO access): `esphome config` passes, all lambdas compile on the host against stub ESPHome types, and the state decoder was checked against real 0x12 frames.
