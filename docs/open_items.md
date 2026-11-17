@@ -2,7 +2,7 @@
 
 The single list of what's left. When an item is done, delete it here and record the result in the relevant reference doc. Tests that need the real installation are planned in `test_build_plan.md`; this file only points to them.
 
-_Last tidied: 17 Nov 2026 (controls tidied, Park/Mow switch + run_command — branch). 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written). 17 Oct: "No Mow" flag + mailbox design added; mower parked for new grass seed. 3 Nov: capture log 10 Oct – 3 Nov reviewed (see "Log review 10 Oct – 3 Nov" below). 4 Nov: unexplained stop on the lawn — evidence log under Hardware. 8 Nov: capture log 3–8 Nov reviewed — Park clears the timer, no-loop fault 7 Nov._
+_Last tidied: 17 Nov 2026 (controls tidied, Park-Mow switch + run_command — flashed, tested, on main). 10 Oct 2026 (capture log 2–10 Oct reviewed; Skip Today written). 17 Oct: "No Mow" flag + mailbox design added; mower parked for new grass seed. 3 Nov: capture log 10 Oct – 3 Nov reviewed (see "Log review 10 Oct – 3 Nov" below). 4 Nov: unexplained stop on the lawn — evidence log under Hardware. 8 Nov: capture log 3–8 Nov reviewed — Park clears the timer, no-loop fault 7 Nov._
 
 ## Working now (firmware 25 Sep – 5 Oct)
 - **AUX1 telemetry:** status, battery, tilt/collision, stats, blade and wheel telemetry. PIN login with auto-relogin.
@@ -19,7 +19,13 @@ _Last tidied: 17 Nov 2026 (controls tidied, Park/Mow switch + run_command — br
 - **Capture logging:** HA File notify + automation on `automower/#`. NB lines can be lost during MQTT reconnects on the lawn.
 - **No unplanned ESP resets 2 Oct – 3 Nov** (all reboots were OTA or low-pack deep-sleep wakes; ESPHome 2026.10.0 since 22 Oct). The 21 "task watchdog" reset reasons in the capture log are stale retained topics replayed on HA restarts (uptime always 1562) — see Housekeeping.
 
-## Current state (17 Nov 13:30)
+## Current state (17 Nov 14:15)
+- **Firmware 17 Nov flashed and working** (compiled 14:09, remote ESPHome build, 59 % flash / 33 % RAM): Park-Mow switch, `run_command`, queued commands, tidied controls. Merged to `main`.
+- **Timer set by keypad** 14:01: `[rm1111001530orm1200000000orm13867br]` → WH1 11:00–15:30, WH2 off, Mon–Fri. Timer bits went `0` (no restriction) → `1` (in work period), so it took.
+- **Parked since 14:13** (`04 0C 05 01 24`: AUTO, waiting for Start, in work period, charging). Watching whether it stays docked until 15:30 — see "Does parked hold" below.
+- Remote build note: the bundle skips `/config/secrets.yaml` (outside `/config/esphome`); the PIN secret must be digits — `uint16_t(${automower_pin})` now accepts it quoted or not.
+
+## Earlier state (17 Nov 13:30)
 - **Parked: AUTO selected, lid closed without Start, charging** (`04 0C 05 00`, 1.11 A, 18.4 → 18.7 V in 12 min). Set by hand at 12:58. Timer still has all work days off from the 13 Nov Park (= no restriction).
 - **8–17 Nov:** mowed on the timer 9–13 Nov (2 cycles/day; 9 Nov 11:14 code 15 "Mower lifted", recovered). 13 Nov 13:20 Park pressed mid-mow with HOME selected → docked in HOME. Pack down to 17.5 V by 15 Nov 20:31; the ESP then woke hourly and slept again (42 times). **In HOME the mower never charged** — the manual says HOME stays docked, nothing about topping up.
 - **What kept it charged in October** (13 Oct – 2 Nov, same AUTO-without-Start state): the mower never woke by itself. Every wake was the 02:00 top-up or the ESP coming out of its 1 h low-pack sleep (mower awake 57–59 min after each sleep started: the ESP boot briefly opens the stop loop). Each wake charged it to full (~1.1 A, 17.8 → 20.3 V in ~2 h; 45–68 min from ~19 V). So: **parked = AUTO, lid closed without Start, Nightly Top-up on.** In HOME the same wakes do nothing (sleeps after ~16 s) — this week's hourly ESP boots show exactly that.
@@ -70,21 +76,22 @@ The design:
 - [x] **Top-up after a restart** — fixed 17 Nov (`docked_known`). The no_mow flag / mailbox were dropped in favour of the Mowing switch + `run_command` (17 Nov).
 - [x] **ESP sleeps with the mower — decided against (17 Nov):** HA would lose control whenever both sleep. The ESP only deep-sleeps below 17.5 V with the mower asleep; Nightly Top-up covers the ~90 mA drain while parked.
 
-## Built 17 Nov, to test (branch `park-switch-and-tidy`)
-Not compiled here (no PlatformIO access): `esphome config` passes, all lambdas compile on the host against stub ESPHome types, and the state decoder was checked against real 0x12 frames.
-- **`run_command`**: plays `keys>expected; ...` steps, skipping a step whose state is already met, checking each result from 0x12 — see keypad_and_menus.md "Commands". Keypad Menu Path and MQTT `automower/keys` use it too.
-- **Automower Park-Mow** switch: off = `cmd_park` (`[rmh1s]>docked; [rmh2]>auto_stopped`), on = `cmd_mow` (`[rmh2s]>auto_armed`). Timer untouched.
+## Firmware 17 Nov — test results (on `main`)
+- **`run_command`**: plays `keys>expected; ...` steps, skipping a step whose state is already met, checking each result from 0x12 — see keypad_and_menus.md "Commands". Keypad Menu Path and MQTT `automower/keys` use it too. **Commands queue** (a toggle during a running command waits its turn).
+- **Automower Park-Mow** switch (`switch.automower_park_mow`): off = `cmd_park` (`[rmh1s]>docked; [rmh2]>auto_stopped`), on = `cmd_mow` (`[rmh2s]>auto_armed`). Timer untouched. Setting kept in flash, not replayed at boot.
 - Nightly top-up no longer skips "not docked" after an ESP restart (`docked_known`, kept in flash).
-- Removed: see keypad_and_menus.md "Home Assistant controls". The old `mowing-switch-and-mailbox` branch is superseded (GitHub refused the delete from here — delete it by hand).
+- Keypad Menu Path clears itself after Send.
+- Removed: see keypad_and_menus.md "Home Assistant controls". Delete the old `mowing-switch-and-mailbox` branch on GitHub by hand (refused from here).
 
-Tests:
-- [ ] Flash while docked and charging. **Turn Nightly Top-up on.**
-- [ ] Mowing off while docked → `[rmh1s]>docked` skipped, `[rmh2]>auto_stopped ok`. Confirms `[rmh2]` (no Start) selects AUTO — never tried by the ESP before.
-- [ ] Next mornings: 02:00 top-up charges it (`Automower Top-up`: charging … mA).
-- [ ] **Does parked hold with the normal timer set?** Restore the timer by hand (or Keypad Menu Path `m1111001530o r m1200000000o r m13867b`), park, watch the next 11:00. 6 Oct: stopped + timer → didn't start (b4 `47`); 3 Nov: stopped (b4 `00`/`24`) + timer → left at 11:06. Until this is known, keep the timer empty while parked.
-- [ ] Mowing on → `[rmh2s]>auto_armed ok`, leaves at the next start.
-- [ ] Mowing off while it's out → HOME + Start, docks, then AUTO without Start.
-- [ ] Mowing off while stopped on the lawn (like 4 Nov) → `docked` not met (last seen moving) → sent home.
+Tests (17 Nov):
+- [x] **Mow from the dock** 13:59 and 14:11: `[rmh2s]>auto_armed ok` (`04 0C 06 …`); 14:11 it left within 15 s (`05 0F 06 01` → `02 02 06 01`, pack 20.47 V).
+- [x] **Park from the dock** 14:10: `docked` skipped, `[rmh2]>auto_stopped ok` (`04 0C 05 01 24`) — **`[rmh2]` without Start selects AUTO.**
+- [x] **Park from the lawn** 14:12: mowing → `[rmh1s]` → going home `03 01 08 20` → docked 14:13:11 (`04 0C 08 20 46`) → `[rmh2]` → `04 0C 05 01 24`, `park OK` in 60 s.
+- [x] **Queue**: off then on 1 s apart → `run_command queueing new instance`, park then mow in order.
+- [x] **A command without `s` undoes Mow**: the 14:01 timer command (lid open/close, no Start) took it from `06` back to `05`. Change settings first, Mow last (or end the settings command with `s`).
+- [ ] **Does parked hold with the timer set, inside a work period?** Between 14:02 (`04 0C 05 01 24`) and 14:10 (`04 0C 06 01 00`) it went back to armed with no keys — across the 14:10 OTA reboot, so either the reboot or the mower re-arming once the keypad marker (b4 `24`) clears inside a work period. Fits 3 Nov (`05`/`24` left at 11:06) vs October (`05` with timer "no restriction" held 2½ weeks). Watching 14:13–15:30 today, then the next 11:00. If it doesn't hold: park must also clear the work days (or select HOME during work periods).
+- [ ] Nightly Top-up on while parked: 02:00 wake charges it (`Automower Top-up`: charging … mA).
+- [ ] Park while stopped on the lawn (like 4 Nov) → `docked` not met (last seen moving) → sent home.
 
 ## Check first
 - [ ] **Flash the 10 Oct build (Skip Today + timer-check fix)** and test Skip Today → keypad_and_menus.md "Skip Today". (Superseded for now by the no_mow design — decide whether Skip Today stays.)
@@ -97,6 +104,7 @@ Tests:
 - [ ] **Auto-wrap** of Send Keypad Menu Path and `automower/keys` as `[r … r s]` — sequences in the log are wrapped correctly; not separately tested.
 
 ## Firmware to do
+- [ ] **Nightly top-up only while parked?** The 02:00 lid open/close without Start leaves an armed mower stopped — on 6 Oct that stopped the 11:00 start (b4 `47`), on 3 Nov it didn't. Option: run the top-up only when Park-Mow is off (mowing mode charges after every run and at each timer start anyway).
 - [ ] **Clock sync independent of Nightly Top-up.** Sync the mower clock on any wake with AUX1 ready and the mower docked (mow start, charge, manual wake), not only in the top-up — and/or a one-off wake the night after a BST change. 25 Oct – 3 Nov it ran +1 h because top-up was off. Fits the mailbox `sync_time` command.
 - [ ] **Stuck detection.** Data from 28 Sep:
   - A lifted fault shows as 0x12 `07` + 0x14/04 lifted = 1, held for the whole fault (17:29:15–17:39:45). That combination is a reliable "stuck/lifted" alert.

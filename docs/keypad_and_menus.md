@@ -134,6 +134,10 @@ Commands in the substitutions:
 - `cmd_park: "[rmh1s]>docked; [rmh2]>auto_stopped"` — HOME + Start sends it home (skipped if already docked), then AUTO selected and the lid closed **without** Start.
 - `cmd_mow: "[rmh2s]>auto_armed"` — AUTO + Start; the timer decides when it goes out.
 
+Notes from the first runs (17 Nov):
+- **Any command that opens the lid and closes it without `s` leaves the mower stopped** (b2 `05`), even if it was set to mow. Change settings first and Mow last, or end the settings command with `s`.
+- Setting the normal timer without starting it: `[rm1111001530orm1200000000orm13867br]>auto_stopped` (WH1 11:00–15:30, WH2 off, work days all on then Sat/Sun off). Takes about a minute of keys.
+
 A new command is a new string (plus a button or switch that plays it). To bring single keys back for testing, paste into `button:`:
 ```yaml
   - {platform: template, name: "Keypad Digit 0", on_press: [{script.execute: {id: key_sequence, seq: "0"}}]}
