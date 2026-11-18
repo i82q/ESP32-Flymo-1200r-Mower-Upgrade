@@ -28,6 +28,8 @@
 #     waiting for Start; every wake charges it to full). ON = mow (AUTO +
 #     Start). The timer is never touched. Result in "Automower Command".
 #   - Nightly top-up no longer skips "not docked" after an ESP restart.
+#   - 18 Nov: the 02:00 top-up runs whenever parked (no switch) and never
+#     while mowing; the mower clock is also checked at the end of each mow day.
 #   - Removed: Mode Home/Auto/Man, Park (timer off), Restore Timer, Skip Today,
 #     Keypad Self Test, Sync Time, AUX1 Stop/Home buttons, the 17 single-key
 #     buttons, Timer Auto Restore, Timer Control / Skip / Self Test text
@@ -67,7 +69,8 @@ substitutions:
   # A new command is just a new string here (plus a button/switch for it).
   #   park: HOME + Start sends it home (skipped if already docked), then AUTO
   #         selected and the lid closed WITHOUT Start: docked, waiting for
-  #         Start, and every wake (Nightly Top-up) charges it to full.
+  #         Start. Parked, the 02:00 top-up wakes it nightly and it
+  #         charges to full (it never wakes by itself when parked).
   #   mow:  AUTO + Start. The timer decides when it goes out.
   cmd_park: "[rmh1s]>docked; [rmh2]>auto_stopped"
   cmd_mow: "[rmh2s]>auto_armed"
@@ -177,14 +180,17 @@ time:
     timezone: "GMT0BST,M3.5.0/1,M10.5.0"
     update_interval: 6h   # default is 15 min - ~96 log lines a day for nothing
     on_time:
-      # Nightly top-up (only when the Nightly Top-up switch is on).
+      # Nightly top-up - only while parked (Park-Mow off). Parked, the mower
+      # never wakes by itself, not even for its timer (17-18 Nov), and the
+      # ESP's ~90 mA would drain it in ~2.5 days. Mowing, it charges after
+      # every run, and a lid open/close without Start would leave it stopped.
       - hours: ${topup_hour}
         minutes: ${topup_minute}
         seconds: 0
         then:
           - if:
               condition:
-                lambda: "return id(nightly_topup_enabled).state;"
+                lambda: "return !id(pm_mow);"
               then:
                 - script.execute: {id: nightly_topup, manual: false}
 
@@ -477,6 +483,7 @@ interval:
             id(last_mow_cycles) = id(mow_cycles);
             ESP_LOGI("mow", "Mow day finished (%u cycle%s)", (unsigned) id(mow_cycles), id(mow_cycles) == 1 ? "" : "s");
             id(publish_last_mow).execute();
+            id(check_mower_clock).execute();   // docked and awake: keep the clock right while mowing
           }
 
           // Next Start (confirmed 2 Oct): read the long 0x12 frame after each
@@ -958,16 +965,6 @@ switch:
     restore_mode: ALWAYS_ON
     entity_category: config
 
-  # Nightly top-up at ${topup_hour}:${topup_minute}. Off by default until
-  # the manual test (Automower Top-up Now) has shown it charges.
-  - platform: template
-    id: nightly_topup_enabled
-    name: "Nightly Top-up"
-    icon: mdi:battery-clock
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
-    entity_category: config
-
   # Park / Mow (17 Nov). OFF = the "park" command, ON = the "mow" command
   # (substitutions cmd_park / cmd_mow, played by run_command).
   # The setting lives in pm_mow (flash). No restore_mode: a restoring
@@ -1180,6 +1177,35 @@ script:
           condition:
             lambda: "return aux1::ready();"
           timeout: 40s
+
+  # Compares the mower clock with SNTP local time and syncs it if it is more
+  # than ${clock_sync_threshold_s}s out (e.g. after a BST change). Run at the end of
+  # each mow day, while it is docked and awake; the parked top-up does the
+  # same check itself.
+  - id: check_mower_clock
+    mode: single
+    then:
+      - delay: 5s
+      - lambda: |-
+          id(tu_sync) = false;
+          auto t = id(sntp_time).now();
+          if (!t.is_valid() || !aux1::ready()) return;
+          auto l = aux1::read_long_status(id(aux1_uart), id(automower_pin_global));
+          if (!l.ok) return;
+          time_t ts = (time_t) t.timestamp;
+          struct tm g;
+          gmtime_r(&ts, &g);
+          int off = (t.hour * 60 + t.minute) - (g.tm_hour * 60 + g.tm_min);  // local - UTC, minutes
+          if (off > 720) off -= 1440;
+          if (off < -720) off += 1440;
+          int32_t drift = (int32_t) l.clock - ((int32_t) t.timestamp + off * 60);
+          id(tu_sync) = drift > ${clock_sync_threshold_s} || drift < -${clock_sync_threshold_s};
+          ESP_LOGI("automower", "Mower clock %+lds %s", (long) drift, id(tu_sync) ? "-> syncing" : "ok");
+      - if:
+          condition:
+            lambda: "return id(tu_sync);"
+          then:
+            - script.execute: sync_mower_time
 
   # Writes the SNTP local time and date to the mower (0x02 writes). The
   # caller wakes the mower first. FORMAT 0x04 = 24h, day.month.year.

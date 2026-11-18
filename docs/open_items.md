@@ -19,7 +19,12 @@ _Last tidied: 17 Nov 2026 (controls tidied, Park-Mow switch + run_command — fl
 - **Capture logging:** HA File notify + automation on `automower/#`. NB lines can be lost during MQTT reconnects on the lawn.
 - **No unplanned ESP resets 2 Oct – 3 Nov** (all reboots were OTA or low-pack deep-sleep wakes; ESPHome 2026.10.0 since 22 Oct). The 21 "task watchdog" reset reasons in the capture log are stale retained topics replayed on HA restarts (uptime always 1562) — see Housekeeping.
 
-## Current state (17 Nov 14:15)
+## Current state (18 Nov)
+- **Log 17 Nov 14:09 → 18 Nov 08:10 (Nightly Top-up off):** parked `04 0C 05 01 24` from 14:13, charged to `01 00 05 01 24` (idle, still AUTO-stopped, in work period) by 14:20, pack 20.44 → 20.31 V awake, **standby 14:45:28**. Then nothing: no re-arm, no departure before 15:30, **no self-wake overnight**, no charge, no ESP deep sleep (only MQTT blips 22:32 and 02:51). The log ends 08:10, so the 18 Nov 11:00 timer start isn't covered.
+- **Conclusion: parked, the mower does not wake or top itself up.** With the ESP drawing ~90 mA it would reach the 17.5 V low-pack sleep in ~2–3 days (October pattern). So the top-up is part of parking now →
+- **Firmware 18 Nov:** the **Nightly Top-up switch is gone**; the 02:00 top-up runs **whenever parked** (Park-Mow off) and never while mowing (so it can't stop an armed mower). The mower clock is also checked/synced at the end of each mow day (docked, awake), so clock sync no longer depends on the top-up.
+
+## Earlier state (17 Nov 14:15)
 - **Firmware 17 Nov flashed and working** (compiled 14:09, remote ESPHome build, 59 % flash / 33 % RAM): Park-Mow switch, `run_command`, queued commands, tidied controls. Merged to `main`.
 - **Timer set by keypad** 14:01: `[rm1111001530orm1200000000orm13867br]` → WH1 11:00–15:30, WH2 off, Mon–Fri. Timer bits went `0` (no restriction) → `1` (in work period), so it took.
 - **Parked since 14:13** (`04 0C 05 01 24`: AUTO, waiting for Start, in work period, charging). Watching whether it stays docked until 15:30 — see "Does parked hold" below.
@@ -89,8 +94,8 @@ Tests (17 Nov):
 - [x] **Park from the lawn** 14:12: mowing → `[rmh1s]` → going home `03 01 08 20` → docked 14:13:11 (`04 0C 08 20 46`) → `[rmh2]` → `04 0C 05 01 24`, `park OK` in 60 s.
 - [x] **Queue**: off then on 1 s apart → `run_command queueing new instance`, park then mow in order.
 - [x] **A command without `s` undoes Mow**: the 14:01 timer command (lid open/close, no Start) took it from `06` back to `05`. Change settings first, Mow last (or end the settings command with `s`).
-- [ ] **Does parked hold with the timer set, inside a work period?** Between 14:02 (`04 0C 05 01 24`) and 14:10 (`04 0C 06 01 00`) it went back to armed with no keys — across the 14:10 OTA reboot, so either the reboot or the mower re-arming once the keypad marker (b4 `24`) clears inside a work period. Fits 3 Nov (`05`/`24` left at 11:06) vs October (`05` with timer "no restriction" held 2½ weeks). Watching 14:13–15:30 today, then the next 11:00. If it doesn't hold: park must also clear the work days (or select HOME during work periods).
-- [ ] Nightly Top-up on while parked: 02:00 wake charges it (`Automower Top-up`: charging … mA).
+- [~] **Does parked hold with the timer set, inside a work period?** 14:13 → 15:30 on 17 Nov: **yes** (stayed `05`, standby 14:45, never left). So the 14:02→14:10 re-arm was most likely the OTA reboot. Still to see: a timer start (11:00) while parked. Between 14:02 (`04 0C 05 01 24`) and 14:10 (`04 0C 06 01 00`) it went back to armed with no keys — across the 14:10 OTA reboot, so either the reboot or the mower re-arming once the keypad marker (b4 `24`) clears inside a work period. Fits 3 Nov (`05`/`24` left at 11:06) vs October (`05` with timer "no restriction" held 2½ weeks). Watching 14:13–15:30 today, then the next 11:00. If it doesn't hold: park must also clear the work days (or select HOME during work periods).
+- [ ] Parked top-up (firmware 18 Nov, automatic): 02:00 wake charges it (`Automower Top-up`: charging … mA) and it stays `05` afterwards.
 - [ ] Park while stopped on the lawn (like 4 Nov) → `docked` not met (last seen moving) → sent home.
 
 ## Check first
@@ -104,8 +109,8 @@ Tests (17 Nov):
 - [ ] **Auto-wrap** of Send Keypad Menu Path and `automower/keys` as `[r … r s]` — sequences in the log are wrapped correctly; not separately tested.
 
 ## Firmware to do
-- [ ] **Nightly top-up only while parked?** The 02:00 lid open/close without Start leaves an armed mower stopped — on 6 Oct that stopped the 11:00 start (b4 `47`), on 3 Nov it didn't. Option: run the top-up only when Park-Mow is off (mowing mode charges after every run and at each timer start anyway).
-- [ ] **Clock sync independent of Nightly Top-up.** Sync the mower clock on any wake with AUX1 ready and the mower docked (mow start, charge, manual wake), not only in the top-up — and/or a one-off wake the night after a BST change. 25 Oct – 3 Nov it ran +1 h because top-up was off. Fits the mailbox `sync_time` command.
+- [x] **Nightly top-up only while parked** — done 18 Nov (no switch; runs when Park-Mow is off). The 02:00 lid open/close without Start leaves an armed mower stopped — on 6 Oct that stopped the 11:00 start (b4 `47`), on 3 Nov it didn't. Option: run the top-up only when Park-Mow is off (mowing mode charges after every run and at each timer start anyway).
+- [x] **Clock sync independent of Nightly Top-up** — done 18 Nov (checked at each "Mow day finished"; parked, the 02:00 top-up does it). Sync the mower clock on any wake with AUX1 ready and the mower docked (mow start, charge, manual wake), not only in the top-up — and/or a one-off wake the night after a BST change. 25 Oct – 3 Nov it ran +1 h because top-up was off. Fits the mailbox `sync_time` command.
 - [ ] **Stuck detection.** Data from 28 Sep:
   - A lifted fault shows as 0x12 `07` + 0x14/04 lifted = 1, held for the whole fault (17:29:15–17:39:45). That combination is a reliable "stuck/lifted" alert.
   - A brief collision + lifted for 10s (18:03:35) recovered by itself, so only alert on the fault, not the flag alone.
